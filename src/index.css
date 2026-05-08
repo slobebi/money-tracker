@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body {
+  background-color: #0f1117;
+  color: #e2e4ef;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  margin: 0;
+  padding: 0;
+  /* Prevent text size bump on iOS */
+  -webkit-text-size-adjust: 100%;
+}
+
+.card {
+  background: #1a1d27;
+  border: 1px solid #2a2d3a;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+@media (max-width: 640px) {
+  .card {
+    padding: 14px;
+    border-radius: 10px;
+  }
+
+  /* Make antd form labels slightly larger for readability */
+  .ant-form-item-label > label {
+    font-size: 13px !important;
+  }
+
+  /* Ensure inputs are tall enough for easy tapping */
+  .ant-input,
+  .ant-input-number,
+  .ant-select-selector,
+  .ant-picker {
+    min-height: 42px !important;
+  }
+
+  /* Bigger tap target for table action buttons */
+  .ant-btn-sm {
+    min-height: 36px;
+    min-width: 36px;
+  }
+}
