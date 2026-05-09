@@ -199,13 +199,31 @@ export default function Dashboard() {
 
       {/* Total Bill This Cycle */}
       {(() => {
-        // pending installments not yet confirmed → not in transactions → add manually
+        // pending installments (unconfirmed, not yet in transactions)
         const pendingInstByCard = {}
         data.pendingInstallments.forEach(inst => {
           pendingInstByCard[inst.card_id] = (pendingInstByCard[inst.card_id] || 0) + inst.monthly_amount
         })
+
+        // total remaining installment obligations per card (from cardDebt)
+        const instRemByCard = {
+          card1: data.cardDebt.installmentCard1 || 0,
+          card2: data.cardDebt.installmentCard2 || 0,
+          card3: data.cardDebt.installmentCard3 || 0,
+        }
+
+        // per card: outstanding − total remaining installments (already embedded) + cycle spending + unconfirmed installments this cycle
+        const cardBills = {}
+        CARD_META.forEach(c => {
+          const outstanding = data.cardLimits[c.id]?.current_balance || 0
+          const instRem     = instRemByCard[c.id]
+          const pending     = pendingInstByCard[c.id] || 0
+          const cycleSpent  = data.cycleSpending[c.id] || 0
+          cardBills[c.id]   = Math.max(outstanding - instRem, 0) + cycleSpent + pending
+        })
+
+        const totalBill        = Object.values(cardBills).reduce((s, v) => s + v, 0)
         const totalPendingInst = Object.values(pendingInstByCard).reduce((s, v) => s + v, 0)
-        const totalBill = CARD_META.reduce((s, c) => s + (data.cycleSpending[c.id] || 0) + (pendingInstByCard[c.id] || 0), 0)
 
         return (
           <div className="card" style={{ border: '1px solid #f5a62333', background: '#2a2000' }}>
@@ -228,9 +246,11 @@ export default function Dashboard() {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {CARD_META.map(c => {
-                const tracked  = data.cycleSpending[c.id] || 0
-                const pending  = pendingInstByCard[c.id] || 0
-                const amount   = tracked + pending
+                const outstanding = data.cardLimits[c.id]?.current_balance || 0
+                const instRem     = instRemByCard[c.id]
+                const pending     = pendingInstByCard[c.id] || 0
+                const cycleSpent  = data.cycleSpending[c.id] || 0
+                const amount      = cardBills[c.id]
                 return (
                   <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: 8 }}>
                     <div>
@@ -241,10 +261,18 @@ export default function Dashboard() {
                       <div style={{ fontSize: 13, fontWeight: 700, color: amount > 0 ? '#f5a623' : '#6b7080' }}>
                         {amount > 0 ? fmt(amount) : '—'}
                       </div>
-                      {pending > 0 && (
-                        <div style={{ fontSize: 10, color: '#9b94ff' }}>+{fmt(pending)} cicilan</div>
+                      {outstanding > 0 && (
+                        <div style={{ fontSize: 10, color: '#6b7080' }}>
+                          {fmt(outstanding)} outstanding{instRem > 0 ? ` −${fmt(instRem)} cicilan` : ''}
+                        </div>
                       )}
-                      {amount > 0 && <div style={{ fontSize: 10, color: '#6b7080' }}>{c.payNote}</div>}
+                      {pending > 0 && (
+                        <div style={{ fontSize: 10, color: '#9b94ff' }}>+{fmt(pending)} cicilan this cycle</div>
+                      )}
+                      {cycleSpent > 0 && (
+                        <div style={{ fontSize: 10, color: '#6b7080' }}>+{fmt(cycleSpent)} this cycle</div>
+                      )}
+                      {amount > 0 && <div style={{ fontSize: 10, color: '#f5a623' }}>{c.payNote}</div>}
                     </div>
                   </div>
                 )
