@@ -9,14 +9,15 @@ import {
   fetchCycleSpending, fetchBudgets, fetchRecurring,
   fetchMonthConfirmations, fetchRecentTransactions,
   addTransaction, confirmRecurring, skipRecurring, fetchCardDebt,
+  fetchInstallments, confirmInstallmentPayment,
 } from '../lib/supabase'
 import { fmt, fmtDate, CARDS, CARD_BADGE_COLOR, CARD_BILL_DAY, currentBillingCycle } from '../lib/utils'
 import Badge from '../components/Badge'
 
 const CARD_META = [
-  { id: 'card1', title: 'Tokopedia BRI', color: '#9b94ff', barColor: '#6c63ff' },
-  { id: 'card2', title: 'Atome Mayapada', color: '#f5a623', barColor: '#f5a623' },
-  { id: 'card3', title: 'BCA', color: '#3ecf8e', barColor: '#3ecf8e' },
+  { id: 'card1', title: 'Tokopedia BRI',  color: '#9b94ff', barColor: '#6c63ff', dueDate: '31st / 1st',       payNote: 'Pay on payday' },
+  { id: 'card2', title: 'Atome Mayapada', color: '#f5a623', barColor: '#f5a623', dueDate: '4th next month',   payNote: 'Pay on payday' },
+  { id: 'card3', title: 'BCA',            color: '#3ecf8e', barColor: '#3ecf8e', dueDate: '19th ⚠️',          payNote: 'Pay 15th–17th' },
 ]
 
 export default function Dashboard() {
@@ -29,8 +30,11 @@ export default function Dashboard() {
   const [data, setData] = useState({
     settings: null, totalIncome: 0, bcaExpenses: 0, cardPayments: [],
     monthTxs: [], cardLimits: {}, cycleSpending: {}, budgets: {},
-    pending: [], recentTxs: [], cardDebt: { card1: 0, card2: 0, card3: 0, total: 0 },
+    pending: [], recentTxs: [],
+    cardDebt: { card1: 0, card2: 0, card3: 0, total: 0, installmentTotal: 0 },
+    pendingInstallments: [],
   })
+  const [confirmingInst, setConfirmingInst] = useState(null)
   const [confirming, setConfirming] = useState(null)
 
   useEffect(() => { load() }, [])
@@ -40,7 +44,7 @@ export default function Dashboard() {
     try {
       const [
         settings, totalIncome, bcaExpenses, cardPayments,
-        monthTxs, cardLimits, budgets, recurring, confirmations, recentTxs, cardDebt,
+        monthTxs, cardLimits, budgets, recurring, confirmations, recentTxs, cardDebt, installments,
         ...cycleArr
       ] = await Promise.all([
         fetchDebitSettings(),
@@ -54,6 +58,7 @@ export default function Dashboard() {
         fetchMonthConfirmations(monthStr),
         fetchRecentTransactions(5),
         fetchCardDebt(),
+        fetchInstallments(),
         ...CARD_META.map(c => {
           const { from, to } = currentBillingCycle(CARD_BILL_DAY[c.id])
           return fetchCycleSpending(c.id, from, to)
@@ -68,7 +73,15 @@ export default function Dashboard() {
         r.active && r.day_of_month <= now.getDate() && !confirmedIds.has(r.id)
       )
 
-      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cardLimits, cycleSpending, budgets, pending, recentTxs, cardDebt })
+      const pendingInstallments = installments.filter(inst => {
+        if (inst.paid_months >= inst.total_months) return false
+        const [y, m] = inst.start_year_month.split('-').map(Number)
+        const d = new Date(y, m - 1 + inst.paid_months, 1)
+        const nextDue = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+        return nextDue <= monthStr
+      })
+
+      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cardLimits, cycleSpending, budgets, pending, recentTxs, cardDebt, pendingInstallments })
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -125,6 +138,33 @@ export default function Dashboard() {
     }
   }
 
+  async function handleConfirmInstallment(inst) {
+    setConfirmingInst(inst.id)
+    try {
+      const { newPaid } = await confirmInstallmentPayment(inst.id, {
+        date:     dayjs().format('YYYY-MM-DD'),
+        amount:   inst.monthly_amount,
+        type:     'expense',
+        method:   inst.card_id,
+        category: inst.category,
+        note:     inst.note || inst.description,
+      })
+      setData(prev => ({
+        ...prev,
+        pendingInstallments: prev.pendingInstallments.filter(i => {
+          if (i.id !== inst.id) return true
+          return false
+        }),
+      }))
+      const completed = newPaid >= inst.total_months
+      message.success(completed ? `"${inst.description}" fully paid off! 🎉` : `Month ${newPaid}/${inst.total_months} logged`)
+    } catch (e) {
+      message.error(e.message)
+    } finally {
+      setConfirmingInst(null)
+    }
+  }
+
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
 
   if (loading) return (
@@ -157,19 +197,81 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* Total Bill This Cycle */}
+      {(() => {
+        // pending installments not yet confirmed → not in transactions → add manually
+        const pendingInstByCard = {}
+        data.pendingInstallments.forEach(inst => {
+          pendingInstByCard[inst.card_id] = (pendingInstByCard[inst.card_id] || 0) + inst.monthly_amount
+        })
+        const totalPendingInst = Object.values(pendingInstByCard).reduce((s, v) => s + v, 0)
+        const totalBill = CARD_META.reduce((s, c) => s + (data.cycleSpending[c.id] || 0) + (pendingInstByCard[c.id] || 0), 0)
+
+        return (
+          <div className="card" style={{ border: '1px solid #f5a62333', background: '#2a2000' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total Bill This Cycle</div>
+                <div style={{ fontSize: 30, fontWeight: 800, color: '#f5a623', lineHeight: 1.1 }}>{fmt(totalBill)}</div>
+                {totalPendingInst > 0 && (
+                  <div style={{ fontSize: 11, color: '#9b94ff', marginTop: 4 }}>
+                    incl. {fmt(totalPendingInst)} unconfirmed installments
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => navigate('/cards')}
+                style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}
+              >
+                Details <RightOutlined />
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {CARD_META.map(c => {
+                const tracked  = data.cycleSpending[c.id] || 0
+                const pending  = pendingInstByCard[c.id] || 0
+                const amount   = tracked + pending
+                return (
+                  <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: 8 }}>
+                    <div>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: c.color }}>{c.title}</span>
+                      <span style={{ fontSize: 11, color: '#6b7080', marginLeft: 8 }}>due {c.dueDate}</span>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: amount > 0 ? '#f5a623' : '#6b7080' }}>
+                        {amount > 0 ? fmt(amount) : '—'}
+                      </div>
+                      {pending > 0 && (
+                        <div style={{ fontSize: 10, color: '#9b94ff' }}>+{fmt(pending)} cicilan</div>
+                      )}
+                      {amount > 0 && <div style={{ fontSize: 10, color: '#6b7080' }}>{c.payNote}</div>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Total Debt */}
-      {data.cardDebt.total > 0 && (
+      {(data.cardDebt.total > 0 || data.cardDebt.installmentTotal > 0) && (
         <div className="card" style={{ border: '1px solid #f25f5c33', background: '#2e1a1a' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
             <div>
               <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total Credit Card Debt</div>
               <div style={{ fontSize: 30, fontWeight: 800, color: '#f25f5c', lineHeight: 1.1 }}>{fmt(data.cardDebt.total)}</div>
+              {data.cardDebt.installmentTotal > 0 && (
+                <div style={{ fontSize: 12, color: '#f5a623', marginTop: 4 }}>
+                  + {fmt(data.cardDebt.installmentTotal)} future installments
+                </div>
+              )}
             </div>
             <button
               onClick={() => navigate('/accounts')}
               style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}
             >
-              Log payment <RightOutlined />
+              Manage <RightOutlined />
             </button>
           </div>
           <div className="grid grid-cols-3 gap-2">
@@ -179,9 +281,50 @@ export default function Dashboard() {
                   {data.cardDebt[c.id] > 0 ? fmt(data.cardDebt[c.id]) : '✓ Paid'}
                 </div>
                 <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.title}</div>
+                {data.cardDebt[`installment${c.id.charAt(0).toUpperCase() + c.id.slice(1)}`] > 0 && (
+                  <div style={{ fontSize: 9, color: '#f5a623', marginTop: 1 }}>
+                    +{fmt(data.cardDebt[`installment${c.id.charAt(0).toUpperCase() + c.id.slice(1)}`])} cicilan
+                  </div>
+                )}
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Pending Installments */}
+      {data.pendingInstallments.length > 0 && (
+        <div className="card" style={{ border: '1px solid #6c63ff44' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <span style={{ fontSize: 16 }}>💳</span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: '#9b94ff' }}>
+              {data.pendingInstallments.length} installment{data.pendingInstallments.length > 1 ? 's' : ''} due this month
+            </span>
+          </div>
+          {data.pendingInstallments.map(inst => (
+            <div key={inst.id} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '10px 0', borderBottom: '1px solid #2a2d3a',
+            }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{inst.description}</div>
+                <div style={{ fontSize: 12, color: '#6b7080' }}>
+                  <Badge method={inst.card_id} /> · {inst.paid_months + 1}/{inst.total_months} · {inst.category}
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#f25f5c' }}>{fmt(inst.monthly_amount)}</span>
+                <button
+                  onClick={() => handleConfirmInstallment(inst)}
+                  disabled={confirmingInst === inst.id}
+                  style={{ background: '#3ecf8e22', border: 'none', borderRadius: 6, padding: '5px 8px', color: '#3ecf8e', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
+                  title="Mark as paid"
+                >
+                  <CheckCircleOutlined />
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

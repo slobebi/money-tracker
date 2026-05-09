@@ -164,17 +164,25 @@ export async function fetchBCADirectExpenses() {
   return (data || []).reduce((s, t) => s + t.amount, 0)
 }
 
-// Returns { card1, card2, card3, total }
-// debt = card_limits.current_balance (pre-app seed) + tracked expenses − logged payments
+// Returns { card1, card2, card3, total, installmentCard1, installmentCard2, installmentCard3, installmentTotal }
+// currentDebt = seed (card_limits.current_balance) + tracked expenses − logged payments
+// installmentRemaining = future monthly_amount × remaining months (not yet transacted)
 export async function fetchCardDebt() {
-  const [{ data: txData, error: txErr }, { data: payData, error: payErr }, { data: limData, error: limErr }] = await Promise.all([
+  const [
+    { data: txData,   error: txErr  },
+    { data: payData,  error: payErr },
+    { data: limData,  error: limErr },
+    { data: instData, error: instErr },
+  ] = await Promise.all([
     supabase.from('transactions').select('method,amount').eq('type', 'expense').in('method', ['card1', 'card2', 'card3']),
     supabase.from('card_payments').select('card_id,amount'),
     supabase.from('card_limits').select('card_id,current_balance'),
+    supabase.from('installments').select('card_id,monthly_amount,total_months,paid_months'),
   ])
   if (txErr) throw txErr
   if (payErr) throw payErr
   if (limErr) throw limErr
+  if (instErr) throw instErr
 
   const seed = { card1: 0, card2: 0, card3: 0 }
   for (const l of limData || []) seed[l.card_id] = l.current_balance || 0
@@ -188,7 +196,20 @@ export async function fetchCardDebt() {
   const card1 = Math.max(seed.card1 + spent.card1 - paid.card1, 0)
   const card2 = Math.max(seed.card2 + spent.card2 - paid.card2, 0)
   const card3 = Math.max(seed.card3 + spent.card3 - paid.card3, 0)
-  return { card1, card2, card3, total: card1 + card2 + card3 }
+
+  const instRem = { card1: 0, card2: 0, card3: 0 }
+  for (const i of instData || []) {
+    const rem = Math.max(i.total_months - i.paid_months, 0)
+    instRem[i.card_id] = (instRem[i.card_id] || 0) + rem * i.monthly_amount
+  }
+
+  return {
+    card1, card2, card3, total: card1 + card2 + card3,
+    installmentCard1: instRem.card1,
+    installmentCard2: instRem.card2,
+    installmentCard3: instRem.card3,
+    installmentTotal: instRem.card1 + instRem.card2 + instRem.card3,
+  }
 }
 
 // ─── Budgets ───────────────────────────────────────────────────────────────────
@@ -260,4 +281,43 @@ export async function skipRecurring(recurringId, monthStr) {
     .from('recurring_confirmations')
     .insert([{ recurring_id: recurringId, month: monthStr, transaction_id: null }])
   if (error) throw error
+}
+
+// ─── Installments ──────────────────────────────────────────────────────────────
+
+export async function fetchInstallments() {
+  const { data, error } = await supabase
+    .from('installments')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function addInstallment(inst) {
+  const { data, error } = await supabase.from('installments').insert([inst]).select().single()
+  if (error) throw error
+  return data
+}
+
+export async function updateInstallment(id, fields) {
+  const { error } = await supabase.from('installments').update(fields).eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteInstallment(id) {
+  const { error } = await supabase.from('installments').delete().eq('id', id)
+  if (error) throw error
+}
+
+export async function confirmInstallmentPayment(id, txData) {
+  const tx = await addTransaction(txData)
+  const { data: inst, error: fetchErr } = await supabase
+    .from('installments').select('paid_months').eq('id', id).single()
+  if (fetchErr) throw fetchErr
+  const newPaid = inst.paid_months + 1
+  const { error: updErr } = await supabase
+    .from('installments').update({ paid_months: newPaid }).eq('id', id)
+  if (updErr) throw updErr
+  return { tx, newPaid }
 }

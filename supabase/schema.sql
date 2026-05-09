@@ -111,3 +111,20 @@ create table if not exists recurring_confirmations (
 alter table recurring_confirmations enable row level security;
 drop policy if exists "Allow all" on recurring_confirmations;
 create policy "Allow all" on recurring_confirmations for all using (true) with check (true);
+
+-- ─── Installments ──────────────────────────────────────────────────────────────
+create table if not exists installments (
+  id               bigint generated always as identity primary key,
+  created_at       timestamptz default now(),
+  description      text    not null,
+  card_id          text    not null check (card_id in ('card1', 'card2', 'card3')),
+  monthly_amount   numeric not null check (monthly_amount > 0),
+  total_months     int     not null check (total_months > 0),
+  paid_months      int     not null default 0 check (paid_months >= 0),
+  start_year_month text    not null,
+  category         text    not null,
+  note             text
+);
+alter table installments enable row level security;
+drop policy if exists "Allow all" on installments;
+create policy "Allow all" on installments for all using (true) with check (true);

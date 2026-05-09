@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Form, InputNumber, Input, Modal, Table, Popconfirm, Select, DatePicker, Collapse, App } from 'antd'
+import { Button, Form, InputNumber, Input, Modal, Table, Popconfirm, Select, DatePicker, App, Progress } from 'antd'
 import { EditOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
@@ -7,6 +7,7 @@ import {
   fetchCardPayments, addCardPayment, deleteCardPayment,
   fetchTotalIncome, fetchBCADirectExpenses,
   fetchRecurring, addRecurring, updateRecurring, deleteRecurring,
+  fetchInstallments, addInstallment, updateInstallment, deleteInstallment,
   fetchCategories,
 } from '../lib/supabase'
 import { fmt, fmtDate, CARDS, CARD_BADGE_COLOR } from '../lib/utils'
@@ -22,29 +23,33 @@ export default function Accounts() {
   const [directExp, setDirectExp]       = useState(0)
   const [payments, setPayments]         = useState([])
   const [recurring, setRecurring]       = useState([])
+  const [installments, setInstallments] = useState([])
   const [categories, setCategories]     = useState([])
   const [loading, setLoading]           = useState(true)
 
-  const [balanceOpen, setBalanceOpen]   = useState(false)
-  const [paymentOpen, setPaymentOpen]   = useState(false)
-  const [recurringOpen, setRecurringOpen] = useState(false)
-  const [editingRec, setEditingRec]     = useState(null)
+  const [balanceOpen, setBalanceOpen]         = useState(false)
+  const [paymentOpen, setPaymentOpen]         = useState(false)
+  const [recurringOpen, setRecurringOpen]     = useState(false)
+  const [installmentOpen, setInstallmentOpen] = useState(false)
+  const [editingRec, setEditingRec]           = useState(null)
+  const [editingInst, setEditingInst]         = useState(null)
 
   const [balanceForm] = Form.useForm()
   const [payForm]     = Form.useForm()
   const [recForm]     = Form.useForm()
+  const [instForm]    = Form.useForm()
 
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true)
     try {
-      const [s, inc, exp, pays, recs, cats] = await Promise.all([
+      const [s, inc, exp, pays, recs, insts, cats] = await Promise.all([
         fetchDebitSettings(), fetchTotalIncome(), fetchBCADirectExpenses(),
-        fetchCardPayments(), fetchRecurring(), fetchCategories(),
+        fetchCardPayments(), fetchRecurring(), fetchInstallments(), fetchCategories(),
       ])
       setSettings(s); setTotalIncome(inc); setDirectExp(exp)
-      setPayments(pays); setRecurring(recs); setCategories(cats)
+      setPayments(pays); setRecurring(recs); setInstallments(insts); setCategories(cats)
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -132,6 +137,73 @@ export default function Accounts() {
     try {
       await updateRecurring(id, { active: !active })
       setRecurring(prev => prev.map(r => r.id === id ? { ...r, active: !active } : r))
+    } catch (e) { message.error(e.message) }
+  }
+
+  function addMonthsToYM(ym, n) {
+    const [y, m] = ym.split('-').map(Number)
+    const d = new Date(y, m - 1 + n, 1)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  }
+  function fmtYM(ym) {
+    const [y, m] = ym.split('-').map(Number)
+    return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+  }
+
+  function openInstallmentModal(inst = null) {
+    setEditingInst(inst)
+    if (inst) {
+      instForm.setFieldsValue({
+        description: inst.description,
+        card_id: inst.card_id,
+        monthly_amount: inst.monthly_amount,
+        total_months: inst.total_months,
+        paid_months: inst.paid_months,
+        start_year_month: dayjs(`${inst.start_year_month}-01`),
+        category: inst.category,
+        note: inst.note,
+      })
+    } else {
+      instForm.resetFields()
+      instForm.setFieldsValue({ paid_months: 0, card_id: 'card1', start_year_month: dayjs() })
+    }
+    setInstallmentOpen(true)
+  }
+
+  async function handleSaveInstallment() {
+    try {
+      const v = await instForm.validateFields()
+      const payload = {
+        description:      v.description,
+        card_id:          v.card_id,
+        monthly_amount:   v.monthly_amount,
+        total_months:     v.total_months,
+        paid_months:      v.paid_months ?? 0,
+        start_year_month: v.start_year_month.format('YYYY-MM'),
+        category:         v.category,
+        note:             v.note || '',
+      }
+      if (editingInst) {
+        await updateInstallment(editingInst.id, payload)
+        setInstallments(prev => prev.map(i => i.id === editingInst.id ? { ...i, ...payload } : i))
+        message.success('Updated')
+      } else {
+        const inst = await addInstallment(payload)
+        setInstallments(prev => [inst, ...prev])
+        message.success('Installment added')
+      }
+      setInstallmentOpen(false)
+    } catch (e) {
+      if (e?.errorFields) return
+      message.error(e.message)
+    }
+  }
+
+  async function handleDeleteInstallment(id, desc) {
+    try {
+      await deleteInstallment(id)
+      setInstallments(prev => prev.filter(i => i.id !== id))
+      message.success(`"${desc}" deleted`)
     } catch (e) { message.error(e.message) }
   }
 
@@ -240,6 +312,77 @@ export default function Accounts() {
         ))
       )}
 
+      {/* Installments */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, marginTop: 8 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Installments</h3>
+        <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => openInstallmentModal()}>
+          Add
+        </Button>
+      </div>
+
+      {installments.length === 0 ? (
+        <div className="card" style={{ textAlign: 'center', color: '#6b7080', fontSize: 13, padding: '24px', marginBottom: 16 }}>
+          No installments. Add existing or new cicilan from your credit cards.
+        </div>
+      ) : (
+        installments.map(inst => {
+          const remaining = inst.total_months - inst.paid_months
+          const pct = Math.round((inst.paid_months / inst.total_months) * 100)
+          const endYM = addMonthsToYM(inst.start_year_month, inst.total_months - 1)
+          const done = remaining <= 0
+          return (
+            <div key={inst.id} className="card" style={{ marginBottom: 8, border: done ? '1px solid #3ecf8e33' : '1px solid #2a2d3a' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>{inst.description}</span>
+                    {done && <span style={{ fontSize: 10, background: '#3ecf8e22', color: '#3ecf8e', padding: '1px 6px', borderRadius: 10 }}>PAID OFF</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#6b7080', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <Badge method={inst.card_id} />
+                    <span>{inst.category}</span>
+                    <span>· {fmtYM(inst.start_year_month)} → {fmtYM(endYM)}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 6, marginLeft: 8 }}>
+                  <Button size="small" onClick={() => openInstallmentModal(inst)}>Edit</Button>
+                  <Popconfirm title={`Delete "${inst.description}"?`} onConfirm={() => handleDeleteInstallment(inst.id, inst.description)} okText="Delete" okButtonProps={{ danger: true }} cancelText="No">
+                    <Button size="small" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#6b7080', marginBottom: 4 }}>
+                  <span>{inst.paid_months} of {inst.total_months} months paid</span>
+                  <span style={{ color: done ? '#3ecf8e' : '#e2e4ef', fontWeight: 600 }}>{pct}%</span>
+                </div>
+                <div style={{ background: '#0f1117', borderRadius: 6, height: 6, overflow: 'hidden' }}>
+                  <div style={{ height: '100%', borderRadius: 6, background: done ? '#3ecf8e' : '#6c63ff', width: `${pct}%`, transition: 'width .4s' }} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e4ef' }}>{fmt(inst.monthly_amount)}</div>
+                  <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>per month</div>
+                </div>
+                <div style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: done ? '#3ecf8e' : '#f5a623' }}>{done ? '✓' : remaining}</div>
+                  <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>months left</div>
+                </div>
+                <div style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: done ? '#3ecf8e' : '#f25f5c' }}>
+                    {done ? '✓ 0' : fmt(remaining * inst.monthly_amount)}
+                  </div>
+                  <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>remaining</div>
+                </div>
+              </div>
+            </div>
+          )
+        })
+      )}
+
       {/* Balance modal */}
       <Modal title="BCA Debit Settings" open={balanceOpen} onCancel={() => setBalanceOpen(false)} onOk={handleSaveBalance} okText="Save" width={380}>
         <Form form={balanceForm} layout="vertical">
@@ -308,6 +451,54 @@ export default function Accounts() {
               </Select>
             </Form.Item>
           </div>
+          <Form.Item label="Category" name="category" rules={[{ required: true }]}>
+            <Select showSearch placeholder="Select category">
+              {categories.map(c => <Select.Option key={c.id} value={c.name}>{c.name}</Select.Option>)}
+            </Select>
+          </Form.Item>
+          <Form.Item label="Note" name="note">
+            <Input placeholder="Optional note" />
+          </Form.Item>
+        </Form>
+      </Modal>
+      {/* Installment modal */}
+      <Modal
+        title={editingInst ? 'Edit Installment' : 'Add Installment'}
+        open={installmentOpen} onCancel={() => setInstallmentOpen(false)}
+        onOk={handleSaveInstallment} okText="Save" width={460}
+      >
+        <Form form={instForm} layout="vertical">
+          <Form.Item label="Description" name="description" rules={[{ required: true }]}>
+            <Input placeholder="e.g. iPhone 15, Samsung TV, Laptop" />
+          </Form.Item>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Credit Card" name="card_id" rules={[{ required: true }]}>
+              <Select>
+                {Object.entries(CARDS).filter(([k]) => k !== 'cash').map(([k, v]) => (
+                  <Select.Option key={k} value={k}><span style={{ color: CARD_BADGE_COLOR[k]?.color }}>{v}</span></Select.Option>
+                ))}
+              </Select>
+            </Form.Item>
+            <Form.Item label="Start Month" name="start_year_month" rules={[{ required: true }]}>
+              <DatePicker picker="month" style={{ width: '100%' }} format="MMM YYYY" allowClear={false} />
+            </Form.Item>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Monthly Amount" name="monthly_amount" rules={[{ required: true, type: 'number', min: 1 }]}>
+              <InputNumber style={{ width: '100%' }} min={0} step={50000} placeholder="Amount per month" />
+            </Form.Item>
+            <Form.Item label="Total Months" name="total_months" rules={[{ required: true, type: 'number', min: 1 }]}>
+              <InputNumber style={{ width: '100%' }} min={1} max={120} placeholder="e.g. 12, 24, 36" />
+            </Form.Item>
+          </div>
+          <Form.Item
+            label="Already Paid Months"
+            name="paid_months"
+            rules={[{ required: true, type: 'number', min: 0 }]}
+            extra="Set > 0 if this installment already started before you used this app"
+          >
+            <InputNumber style={{ width: '100%' }} min={0} placeholder="0 = starts fresh" />
+          </Form.Item>
           <Form.Item label="Category" name="category" rules={[{ required: true }]}>
             <Select showSearch placeholder="Select category">
               {categories.map(c => <Select.Option key={c.id} value={c.name}>{c.name}</Select.Option>)}
