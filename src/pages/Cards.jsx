@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, InputNumber, Form, App } from 'antd'
-import { fetchCardLimits, upsertCardLimit, fetchCycleSpending } from '../lib/supabase'
+import { fetchCardLimits, upsertCardLimit, fetchCycleSpending, fetchCardDebt } from '../lib/supabase'
 import { fmt, currentBillingCycle, CARD_BILL_DAY } from '../lib/utils'
 
 const CARD_META = [
@@ -56,6 +56,7 @@ export default function Cards() {
   const { message } = App.useApp()
   const [limits, setLimits]   = useState({})
   const [cycling, setCycling] = useState({})
+  const [debt, setDebt]       = useState({ card1: 0, card2: 0, card3: 0, total: 0 })
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(null)
   const [form] = Form.useForm()
@@ -64,14 +65,16 @@ export default function Cards() {
   useEffect(() => {
     async function load() {
       try {
-        const [lims, ...spending] = await Promise.all([
+        const [lims, debtData, ...spending] = await Promise.all([
           fetchCardLimits(),
+          fetchCardDebt(),
           ...CARD_META.map(c => {
             const { from, to } = currentBillingCycle(CARD_BILL_DAY[c.id])
             return fetchCycleSpending(c.id, from, to)
           }),
         ])
         setLimits(lims)
+        setDebt(debtData)
         const cyc = {}
         CARD_META.forEach((c, i) => { cyc[c.id] = spending[i] })
         setCycling(cyc)
@@ -118,6 +121,27 @@ export default function Cards() {
 
       <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontSize: 13, background: '#6c63ff18', border: '1px solid #6c63ff44', color: '#9b94ff' }}>
         Your payday is the last working day of the month. Use this schedule every month.
+      </div>
+
+      {/* Total debt summary */}
+      <div className="card" style={{ marginBottom: 16, border: `1px solid ${debt.total > 0 ? '#f25f5c33' : '#3ecf8e33'}`, background: debt.total > 0 ? '#2e1a1a' : '#1a2e2a' }}>
+        <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total Outstanding Debt</div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: debt.total > 0 ? '#f25f5c' : '#3ecf8e', marginBottom: 10 }}>
+          {debt.total > 0 ? fmt(debt.total) : '✓ All clear'}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {CARD_META.map(c => (
+            <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Paid'}
+              </div>
+              <div style={{ fontSize: 10, color: c.accentColor, marginTop: 2, fontWeight: 600 }}>{c.title}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: '#6b7080', marginTop: 10 }}>
+          Debt = initial outstanding + tracked expenses − bill payments logged
+        </div>
       </div>
 
       {CARD_META.map(c => {
@@ -200,7 +224,7 @@ export default function Cards() {
                     </div>
                   ))}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2a2d3a', fontSize: 12, color: '#6b7080' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2a2d3a', fontSize: 12, color: '#6b7080' }}>
                   <div>
                     <span style={{ display: 'block', color: '#e2e4ef', fontWeight: 500 }}>{fmt(outstanding)}</span>
                     Outstanding (manual)
@@ -208,6 +232,12 @@ export default function Cards() {
                   <div>
                     <span style={{ display: 'block', color: '#e2e4ef', fontWeight: 500 }}>+ {fmt(thisCycle)}</span>
                     This cycle ({from.slice(5)} → {to.slice(5)})
+                  </div>
+                  <div>
+                    <span style={{ display: 'block', fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                      {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Paid'}
+                    </span>
+                    Total debt owed
                   </div>
                 </div>
               </div>

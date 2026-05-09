@@ -59,7 +59,8 @@ export async function deleteTransaction(id) {
 
 export async function fetchMonthTransactions(year, month) {
   const from = `${year}-${String(month + 1).padStart(2, '0')}-01`
-  const to   = `${year}-${String(month + 1).padStart(2, '0')}-31`
+  const lastDay = new Date(year, month + 1, 0).getDate()
+  const to   = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
@@ -161,6 +162,33 @@ export async function fetchBCADirectExpenses() {
     .from('transactions').select('amount').eq('method', 'cash').eq('type', 'expense')
   if (error) throw error
   return (data || []).reduce((s, t) => s + t.amount, 0)
+}
+
+// Returns { card1, card2, card3, total }
+// debt = card_limits.current_balance (pre-app seed) + tracked expenses − logged payments
+export async function fetchCardDebt() {
+  const [{ data: txData, error: txErr }, { data: payData, error: payErr }, { data: limData, error: limErr }] = await Promise.all([
+    supabase.from('transactions').select('method,amount').eq('type', 'expense').in('method', ['card1', 'card2', 'card3']),
+    supabase.from('card_payments').select('card_id,amount'),
+    supabase.from('card_limits').select('card_id,current_balance'),
+  ])
+  if (txErr) throw txErr
+  if (payErr) throw payErr
+  if (limErr) throw limErr
+
+  const seed = { card1: 0, card2: 0, card3: 0 }
+  for (const l of limData || []) seed[l.card_id] = l.current_balance || 0
+
+  const spent = { card1: 0, card2: 0, card3: 0 }
+  for (const t of txData || []) spent[t.method] = (spent[t.method] || 0) + t.amount
+
+  const paid = { card1: 0, card2: 0, card3: 0 }
+  for (const p of payData || []) paid[p.card_id] = (paid[p.card_id] || 0) + p.amount
+
+  const card1 = Math.max(seed.card1 + spent.card1 - paid.card1, 0)
+  const card2 = Math.max(seed.card2 + spent.card2 - paid.card2, 0)
+  const card3 = Math.max(seed.card3 + spent.card3 - paid.card3, 0)
+  return { card1, card2, card3, total: card1 + card2 + card3 }
 }
 
 // ─── Budgets ───────────────────────────────────────────────────────────────────

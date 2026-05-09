@@ -8,7 +8,7 @@ import {
   fetchCardPayments, fetchMonthTransactions, fetchCardLimits,
   fetchCycleSpending, fetchBudgets, fetchRecurring,
   fetchMonthConfirmations, fetchRecentTransactions,
-  addTransaction, confirmRecurring, skipRecurring,
+  addTransaction, confirmRecurring, skipRecurring, fetchCardDebt,
 } from '../lib/supabase'
 import { fmt, fmtDate, CARDS, CARD_BADGE_COLOR, CARD_BILL_DAY, currentBillingCycle } from '../lib/utils'
 import Badge from '../components/Badge'
@@ -29,7 +29,7 @@ export default function Dashboard() {
   const [data, setData] = useState({
     settings: null, totalIncome: 0, bcaExpenses: 0, cardPayments: [],
     monthTxs: [], cardLimits: {}, cycleSpending: {}, budgets: {},
-    pending: [], recentTxs: [],
+    pending: [], recentTxs: [], cardDebt: { card1: 0, card2: 0, card3: 0, total: 0 },
   })
   const [confirming, setConfirming] = useState(null)
 
@@ -40,7 +40,7 @@ export default function Dashboard() {
     try {
       const [
         settings, totalIncome, bcaExpenses, cardPayments,
-        monthTxs, cardLimits, budgets, recurring, confirmations, recentTxs,
+        monthTxs, cardLimits, budgets, recurring, confirmations, recentTxs, cardDebt,
         ...cycleArr
       ] = await Promise.all([
         fetchDebitSettings(),
@@ -53,6 +53,7 @@ export default function Dashboard() {
         fetchRecurring(),
         fetchMonthConfirmations(monthStr),
         fetchRecentTransactions(5),
+        fetchCardDebt(),
         ...CARD_META.map(c => {
           const { from, to } = currentBillingCycle(CARD_BILL_DAY[c.id])
           return fetchCycleSpending(c.id, from, to)
@@ -67,7 +68,7 @@ export default function Dashboard() {
         r.active && r.day_of_month <= now.getDate() && !confirmedIds.has(r.id)
       )
 
-      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cardLimits, cycleSpending, budgets, pending, recentTxs })
+      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cardLimits, cycleSpending, budgets, pending, recentTxs, cardDebt })
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -155,6 +156,34 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Total Debt */}
+      {data.cardDebt.total > 0 && (
+        <div className="card" style={{ border: '1px solid #f25f5c33', background: '#2e1a1a' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Total Credit Card Debt</div>
+              <div style={{ fontSize: 30, fontWeight: 800, color: '#f25f5c', lineHeight: 1.1 }}>{fmt(data.cardDebt.total)}</div>
+            </div>
+            <button
+              onClick={() => navigate('/accounts')}
+              style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}
+            >
+              Log payment <RightOutlined />
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {CARD_META.map(c => (
+              <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: data.cardDebt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                  {data.cardDebt[c.id] > 0 ? fmt(data.cardDebt[c.id]) : '✓ Paid'}
+                </div>
+                <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.title}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* This month stats */}
       <div className="grid grid-cols-2 gap-3">
