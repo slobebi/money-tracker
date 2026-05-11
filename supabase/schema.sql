@@ -1,6 +1,33 @@
 -- Run this in your Supabase SQL Editor
 -- Safe to re-run: uses IF NOT EXISTS / ON CONFLICT DO NOTHING / DROP POLICY IF EXISTS
 
+-- ─── Cards ─────────────────────────────────────────────────────────────────────
+create table if not exists cards (
+  id              text    primary key,
+  name            text    not null,
+  type            text    not null check (type in ('credit','debit')),
+  color           text    not null default '#6c63ff',
+  bill_day        int,
+  due_day         int,
+  due_next_month  boolean not null default false,
+  credit_limit    numeric not null default 0,
+  current_balance numeric not null default 0,
+  monthly_salary  numeric not null default 0,
+  active          boolean not null default true,
+  sort_order      int     not null default 0,
+  updated_at      timestamptz default now()
+);
+alter table cards enable row level security;
+drop policy if exists "Allow all" on cards;
+create policy "Allow all" on cards for all using (true) with check (true);
+
+insert into cards (id, name, type, color, bill_day, due_day, due_next_month, sort_order) values
+  ('card1', 'Tokopedia BRI',  'credit', '#9b94ff', 16, 31, false, 1),
+  ('card2', 'Atome Mayapada', 'credit', '#f5a623', 15, 4,  true,  2),
+  ('card3', 'BCA',            'credit', '#3ecf8e', 3,  19, false, 3),
+  ('cash',  'BCA Debit',      'debit',  '#6b7080', null, null, false, 4)
+on conflict (id) do nothing;
+
 -- ─── Transactions ──────────────────────────────────────────────────────────────
 create table if not exists transactions (
   id          bigint generated always as identity primary key,
@@ -8,7 +35,7 @@ create table if not exists transactions (
   date        date        not null,
   amount      numeric     not null check (amount > 0),
   type        text        not null check (type in ('expense', 'income')),
-  method      text        not null check (method in ('card1', 'card2', 'card3', 'cash')),
+  method      text        not null,
   category    text        not null,
   note        text,
   split_id    uuid
@@ -17,18 +44,6 @@ alter table transactions enable row level security;
 drop policy if exists "Allow all" on transactions;
 create policy "Allow all" on transactions for all using (true) with check (true);
 create index if not exists transactions_date_idx on transactions (date);
-alter table transactions add column if not exists split_id uuid;
-
--- ─── Card Limits ───────────────────────────────────────────────────────────────
-create table if not exists card_limits (
-  card_id         text    primary key check (card_id in ('card1', 'card2', 'card3')),
-  total_limit     numeric not null default 0,
-  current_balance numeric not null default 0,
-  updated_at      timestamptz default now()
-);
-alter table card_limits enable row level security;
-drop policy if exists "Allow all" on card_limits;
-create policy "Allow all" on card_limits for all using (true) with check (true);
 
 -- ─── Categories ────────────────────────────────────────────────────────────────
 create table if not exists categories (
@@ -46,24 +61,12 @@ insert into categories (name) values
   ('Education'), ('Other')
 on conflict (name) do nothing;
 
--- ─── BCA Debit Settings ────────────────────────────────────────────────────────
-create table if not exists debit_settings (
-  id              int primary key default 1 check (id = 1),
-  initial_balance numeric not null default 0,
-  monthly_salary  numeric not null default 0,
-  updated_at      timestamptz default now()
-);
-alter table debit_settings enable row level security;
-drop policy if exists "Allow all" on debit_settings;
-create policy "Allow all" on debit_settings for all using (true) with check (true);
-alter table debit_settings add column if not exists monthly_salary numeric not null default 0;
-
 -- ─── Card Payments ─────────────────────────────────────────────────────────────
 create table if not exists card_payments (
   id         bigint generated always as identity primary key,
   created_at timestamptz default now(),
   date       date        not null,
-  card_id    text        not null check (card_id in ('card1', 'card2', 'card3')),
+  card_id    text        not null,
   amount     numeric     not null check (amount > 0),
   note       text
 );
@@ -89,7 +92,7 @@ create table if not exists recurring_transactions (
   name         text    not null,
   amount       numeric not null check (amount > 0),
   type         text    not null check (type in ('expense', 'income')),
-  method       text    not null check (method in ('card1', 'card2', 'card3', 'cash')),
+  method       text    not null,
   category     text    not null,
   note         text,
   day_of_month int     not null check (day_of_month between 1 and 28),
@@ -117,7 +120,7 @@ create table if not exists installments (
   id               bigint generated always as identity primary key,
   created_at       timestamptz default now(),
   description      text    not null,
-  card_id          text    not null check (card_id in ('card1', 'card2', 'card3')),
+  card_id          text    not null,
   monthly_amount   numeric not null check (monthly_amount > 0),
   total_months     int     not null check (total_months > 0),
   paid_months      int     not null default 0 check (paid_months >= 0),

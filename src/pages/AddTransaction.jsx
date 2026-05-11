@@ -4,9 +4,10 @@ import { PlusOutlined, DeleteOutlined, SplitCellsOutlined } from '@ant-design/ic
 import dayjs from 'dayjs'
 import { v4 as uuidv4 } from 'uuid'
 import { addTransaction, addTransactions, fetchCategories, addCategory, deleteCategory } from '../lib/supabase'
-import { CARDS } from '../lib/utils'
+import { useCards } from '../contexts/CardsContext'
 
 export default function AddTransaction() {
+  const { cards } = useCards()
   const { message } = App.useApp()
   const [form] = Form.useForm()
   const [loading, setLoading]       = useState(false)
@@ -79,7 +80,7 @@ export default function AddTransaction() {
         message.success('Transaction added!')
       }
       form.resetFields()
-      form.setFieldsValue({ date: dayjs(), type: 'expense', method: 'card1' })
+      form.setFieldsValue({ date: dayjs(), type: 'expense', method: cards[0]?.id || '' })
       setIsSplit(false)
       setSplits([{ category: null, amount: null }])
       setTotalAmount(0)
@@ -127,7 +128,7 @@ export default function AddTransaction() {
 
       <div className="card">
         <Form form={form} layout="vertical" onFinish={handleSubmit}
-          initialValues={{ date: dayjs(), type: 'expense', method: 'card1' }}>
+          initialValues={{ date: dayjs(), type: 'expense', method: cards[0]?.id || '' }}>
 
           <Form.Item label="Date" name="date" rules={[{ required: true }]}>
             <DatePicker style={{ width: '100%' }} format="DD MMM YYYY" allowClear={false} />
@@ -149,7 +150,7 @@ export default function AddTransaction() {
 
           <Form.Item label="Payment Method" name="method" rules={[{ required: true }]}>
             <Select>
-              {Object.entries(CARDS).map(([k, v]) => <Select.Option key={k} value={k}>{v}</Select.Option>)}
+              {cards.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
             </Select>
           </Form.Item>
 

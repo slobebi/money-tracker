@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 import { ConfigProvider, App, theme } from 'antd'
 import AppRoutes from './App'
+import { CardsProvider } from './contexts/CardsContext'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
@@ -30,7 +31,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
     >
       <App>
         <HashRouter>
-          <AppRoutes />
+          <CardsProvider>
+            <AppRoutes />
+          </CardsProvider>
         </HashRouter>
       </App>
     </ConfigProvider>

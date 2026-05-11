@@ -1,126 +1,130 @@
 import { useEffect, useState } from 'react'
-import { Button, InputNumber, Form, App } from 'antd'
-import { fetchCardLimits, upsertCardLimit, fetchCycleSpending, fetchCardDebt } from '../lib/supabase'
-import { fmt, currentBillingCycle, CARD_BILL_DAY } from '../lib/utils'
+import { Button, InputNumber, Form, App, Modal, Input, Select, Switch, Popconfirm } from 'antd'
+import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
+import { addCard, updateCard, deleteCard, fetchCycleSpending, fetchCardDebt } from '../lib/supabase'
+import { fmt, currentBillingCycle } from '../lib/utils'
+import { useCards } from '../contexts/CardsContext'
 
-const CARD_META = [
-  {
-    id: 'card1',
-    title: 'Tokopedia BRI',
-    accentColor: '#9b94ff',
-    borderColor: '#6c63ff44',
-    barColor: '#6c63ff',
-    billDate: '16th of each month',
-    dueDate: '31st or 1st (next month)',
-    payOn: 'Payday (last working day)',
-    payColor: '#3ecf8e',
-    trackCycle: '17th → 16th next month',
-    warn: null,
-  },
-  {
-    id: 'card2',
-    title: 'Atome Mayapada',
-    accentColor: '#f5a623',
-    borderColor: '#f5a62344',
-    barColor: '#f5a623',
-    billDate: '15th of each month',
-    dueDate: '4th of next month',
-    payOn: 'Payday (last working day)',
-    payColor: '#3ecf8e',
-    trackCycle: '16th → 15th next month',
-    warn: null,
-  },
-  {
-    id: 'card3',
-    title: 'BCA',
-    accentColor: '#3ecf8e',
-    borderColor: '#3ecf8e44',
-    barColor: '#3ecf8e',
-    billDate: '3rd of each month',
-    dueDate: '19th of each month',
-    payOn: '15th–17th (before due date)',
-    payColor: '#f5a623',
-    trackCycle: '4th → 3rd next month',
-    warn: 'Due date (19th) falls BEFORE payday. Pre-allocate this bill from your previous paycheck.',
-  },
-]
-
-const rhythm = [
-  { date: '1st',              action: 'Review previous month total spending' },
-  { date: '4th',              action: 'Atome Mayapada due date (already paid on payday)' },
-  { date: '15th–17th',        action: '💳 Pay BCA card (due 19th)' },
-  { date: 'Last working day', action: '💳 Pay Tokopedia BRI & Atome Mayapada — review full month' },
-]
+const PRESET_COLORS = ['#9b94ff', '#f5a623', '#3ecf8e', '#f25f5c', '#6c63ff', '#38bdf8', '#a78bfa', '#fb7185']
 
 export default function Cards() {
   const { message } = App.useApp()
-  const [limits, setLimits]   = useState({})
-  const [cycling, setCycling] = useState({})
-  const [debt, setDebt]       = useState({ card1: 0, card2: 0, card3: 0, total: 0 })
-  const [loading, setLoading] = useState(true)
-  const [editing, setEditing] = useState(null)
+  const { creditCards, refresh } = useCards()
+
+  const [cycling, setCycling]   = useState({})
+  const [debt, setDebt]         = useState({ total: 0, installmentTotal: 0, _creditCardIds: [] })
+  const [loading, setLoading]   = useState(true)
+
+  const [cardModalOpen, setCardModalOpen] = useState(false)
+  const [editingCard, setEditingCard]     = useState(null)
+  const [saving, setSaving]               = useState(false)
   const [form] = Form.useForm()
-  const [saving, setSaving]   = useState(false)
 
   useEffect(() => {
-    async function load() {
-      try {
-        const [lims, debtData, ...spending] = await Promise.all([
-          fetchCardLimits(),
-          fetchCardDebt(),
-          ...CARD_META.map(c => {
-            const { from, to } = currentBillingCycle(CARD_BILL_DAY[c.id])
-            return fetchCycleSpending(c.id, from, to)
-          }),
-        ])
-        setLimits(lims)
-        setDebt(debtData)
-        const cyc = {}
-        CARD_META.forEach((c, i) => { cyc[c.id] = spending[i] })
-        setCycling(cyc)
-      } catch (e) {
-        message.error(e.message)
-      } finally {
-        setLoading(false)
-      }
-    }
-    load()
-  }, [])
+    if (creditCards.length === 0 && !loading) return
+    loadData()
+  }, [creditCards])
 
-  function openEdit(cardId) {
-    const l = limits[cardId]
-    form.setFieldsValue({
-      total_limit:     l?.total_limit     ?? null,
-      current_balance: l?.current_balance ?? null,
-    })
-    setEditing(cardId)
+  async function loadData() {
+    if (creditCards.length === 0) { setLoading(false); return }
+    try {
+      const [debtData, ...spending] = await Promise.all([
+        fetchCardDebt(),
+        ...creditCards.map(c => {
+          const { from, to } = currentBillingCycle(c.bill_day || 1)
+          return fetchCycleSpending(c.id, from, to)
+        }),
+      ])
+      setDebt(debtData)
+      const cyc = {}
+      creditCards.forEach((c, i) => { cyc[c.id] = spending[i] })
+      setCycling(cyc)
+    } catch (e) {
+      message.error(e.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
-  async function handleSave(cardId) {
+  function openAdd() {
+    setEditingCard(null)
+    form.resetFields()
+    form.setFieldsValue({ type: 'credit', color: '#9b94ff', active: true, due_next_month: false, sort_order: creditCards.length + 1 })
+    setCardModalOpen(true)
+  }
+
+  function openEdit(card) {
+    setEditingCard(card)
+    form.setFieldsValue({
+      name:            card.name,
+      color:           card.color,
+      bill_day:        card.bill_day,
+      due_day:         card.due_day,
+      due_next_month:  card.due_next_month,
+      credit_limit:    card.credit_limit,
+      current_balance: card.current_balance,
+      active:          card.active,
+      sort_order:      card.sort_order,
+    })
+    setCardModalOpen(true)
+  }
+
+  async function handleSaveCard() {
     try {
-      const values = await form.validateFields()
+      const v = await form.validateFields()
       setSaving(true)
-      await upsertCardLimit(cardId, values.total_limit, values.current_balance)
-      setLimits(prev => ({
-        ...prev,
-        [cardId]: { card_id: cardId, total_limit: values.total_limit, current_balance: values.current_balance },
-      }))
-      setEditing(null)
-      message.success('Saved')
+      const payload = {
+        name:            v.name,
+        type:            'credit',
+        color:           v.color,
+        bill_day:        v.bill_day || null,
+        due_day:         v.due_day || null,
+        due_next_month:  v.due_next_month ?? false,
+        credit_limit:    v.credit_limit || 0,
+        current_balance: v.current_balance || 0,
+        active:          v.active ?? true,
+        sort_order:      v.sort_order || 0,
+      }
+      if (editingCard) {
+        await updateCard(editingCard.id, payload)
+        message.success('Card updated')
+      } else {
+        const id = v.name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') + '_' + Date.now()
+        await addCard({ ...payload, id })
+        message.success('Card added')
+      }
+      await refresh()
+      setCardModalOpen(false)
+      loadData()
     } catch (e) {
-      if (e?.errorFields) return // antd validation error, already shown
+      if (e?.errorFields) return
       message.error(e.message)
     } finally {
       setSaving(false)
     }
   }
 
+  async function handleDeleteCard(card) {
+    try {
+      await deleteCard(card.id)
+      await refresh()
+      message.success(`"${card.name}" deleted`)
+    } catch (e) {
+      message.error(e.message)
+    }
+  }
+
+  const rhythm = [
+    { date: '1st',              action: 'Review previous month total spending' },
+    { date: '15th–17th',        action: 'Pay cards due before payday (e.g. BCA)' },
+    { date: 'Last working day', action: 'Pay remaining card bills — review full month' },
+  ]
+
   return (
     <div>
-      <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 20, color: '#e2e4ef' }}>Credit Cards</h2>
-
-      <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontSize: 13, background: '#6c63ff18', border: '1px solid #6c63ff44', color: '#9b94ff' }}>
-        Your payday is the last working day of the month. Use this schedule every month.
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 600, color: '#e2e4ef', margin: 0 }}>Credit Cards</h2>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>Add Card</Button>
       </div>
 
       {/* Total debt summary */}
@@ -129,74 +133,70 @@ export default function Cards() {
         <div style={{ fontSize: 28, fontWeight: 800, color: debt.total > 0 ? '#f25f5c' : '#3ecf8e', marginBottom: 10 }}>
           {debt.total > 0 ? fmt(debt.total) : '✓ All clear'}
         </div>
-        <div className="grid grid-cols-3 gap-2">
-          {CARD_META.map(c => (
-            <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
-                {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Paid'}
+        {creditCards.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {creditCards.map(c => (
+              <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center', minWidth: 90 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                  {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Paid'}
+                </div>
+                <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.name}</div>
               </div>
-              <div style={{ fontSize: 10, color: c.accentColor, marginTop: 2, fontWeight: 600 }}>{c.title}</div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: '#6b7080', marginTop: 10 }}>
           Debt = initial outstanding + tracked expenses − bill payments logged
         </div>
       </div>
 
-      {CARD_META.map(c => {
-        const lim         = limits[c.id]
-        const totalLimit  = lim?.total_limit     || 0
-        const outstanding = lim?.current_balance || 0
-        const thisCycle   = cycling[c.id]        || 0
+      {creditCards.length === 0 && !loading && (
+        <div className="card" style={{ textAlign: 'center', color: '#6b7080', padding: '32px', marginBottom: 16 }}>
+          No credit cards added yet. Click "Add Card" to get started.
+        </div>
+      )}
+
+      {creditCards.map(c => {
+        const totalLimit  = c.credit_limit    || 0
+        const outstanding = c.current_balance || 0
+        const thisCycle   = cycling[c.id]     || 0
         const projected   = outstanding + thisCycle
         const available   = totalLimit - projected
         const utilPct     = totalLimit > 0 ? Math.min((projected / totalLimit) * 100, 100) : 0
         const utilColor   = utilPct >= 90 ? '#f25f5c' : utilPct >= 70 ? '#f5a623' : '#3ecf8e'
-        const { from, to } = currentBillingCycle(CARD_BILL_DAY[c.id])
+        const { from, to } = c.bill_day ? currentBillingCycle(c.bill_day) : { from: '—', to: '—' }
+        const accentColor = c.color || '#9b94ff'
+        const borderColor = accentColor + '44'
+
+        const dueStr = c.due_day
+          ? `${c.due_day}${['st','nd','rd'][c.due_day-1]||'th'}${c.due_next_month ? ' (next month)' : ''}`
+          : '—'
+        const billStr = c.bill_day
+          ? `${c.bill_day}${['st','nd','rd'][c.bill_day-1]||'th'} of each month`
+          : '—'
 
         return (
-          <div key={c.id} className="card" style={{ marginBottom: 16, border: `1px solid ${c.borderColor}` }}>
-            {/* Header */}
+          <div key={c.id} className="card" style={{ marginBottom: 16, border: `1px solid ${borderColor}`, opacity: c.active ? 1 : 0.6 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-              <h3 style={{ fontSize: 14, fontWeight: 600, color: c.accentColor, textTransform: 'uppercase', letterSpacing: '0.5px', margin: 0 }}>
-                {c.title}
-              </h3>
-              <Button
-                size="small"
-                onClick={() => editing === c.id ? setEditing(null) : openEdit(c.id)}
-              >
-                {editing === c.id ? 'Cancel' : (lim ? 'Edit Limit' : 'Set Limit')}
-              </Button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ width: 12, height: 12, borderRadius: '50%', background: accentColor, flexShrink: 0 }} />
+                <h3 style={{ fontSize: 14, fontWeight: 600, color: accentColor, textTransform: 'uppercase', letterSpacing: '0.5px', margin: 0 }}>
+                  {c.name}
+                </h3>
+                {!c.active && <span style={{ fontSize: 10, background: '#6b707022', color: '#6b7080', padding: '1px 6px', borderRadius: 10 }}>INACTIVE</span>}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(c)}>Edit</Button>
+                <Popconfirm
+                  title={`Delete "${c.name}"?`}
+                  description="All transactions referencing this card will remain but lose the card label."
+                  onConfirm={() => handleDeleteCard(c)}
+                  okText="Delete" okButtonProps={{ danger: true }} cancelText="No"
+                >
+                  <Button size="small" danger icon={<DeleteOutlined />} />
+                </Popconfirm>
+              </div>
             </div>
-
-            {c.warn && (
-              <div style={{ marginBottom: 12, padding: '8px 12px', borderRadius: 8, fontSize: 12, background: '#f5a62318', border: '1px solid #f5a62344', color: '#f5a623' }}>
-                ⚠️ {c.warn}
-              </div>
-            )}
-
-            {/* Limit editor */}
-            {editing === c.id && (
-              <div style={{ marginBottom: 16, padding: 12, background: '#0f1117', borderRadius: 8, border: '1px solid #2a2d3a' }}>
-                <Form form={form} layout="vertical">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <Form.Item label="Credit Limit" name="total_limit" rules={[{ required: true, type: 'number', min: 1, message: 'Required' }]} style={{ marginBottom: 8 }}>
-                      <InputNumber style={{ width: '100%' }} min={0} placeholder="e.g. 10000000" step={100000} />
-                    </Form.Item>
-                    <Form.Item label="Current Outstanding" name="current_balance" rules={[{ required: true, type: 'number', min: 0, message: 'Required' }]} style={{ marginBottom: 8 }}>
-                      <InputNumber style={{ width: '100%' }} min={0} placeholder="Balance you currently owe" step={100000} />
-                    </Form.Item>
-                  </div>
-                  <p style={{ fontSize: 11, color: '#6b7080', marginBottom: 10 }}>
-                    "Current Outstanding" = what you already owe before logging new transactions here.
-                  </p>
-                  <Button type="primary" size="small" onClick={() => handleSave(c.id)} loading={saving}>
-                    Save
-                  </Button>
-                </Form>
-              </div>
-            )}
 
             {/* Utilization */}
             {loading ? (
@@ -214,8 +214,8 @@ export default function Cards() {
                 </div>
                 <div className="grid grid-cols-3 gap-2" style={{ marginTop: 12 }}>
                   {[
-                    { label: 'Credit Limit',   val: fmt(totalLimit), color: '#e2e4ef' },
-                    { label: 'Projected Bill',  val: fmt(projected),  color: '#f25f5c' },
+                    { label: 'Credit Limit',   val: fmt(totalLimit),             color: '#e2e4ef' },
+                    { label: 'Projected Bill',  val: fmt(projected),              color: '#f25f5c' },
                     { label: 'Available',       val: fmt(Math.max(available, 0)), color: '#3ecf8e' },
                   ].map(s => (
                     <div key={s.label} style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
@@ -227,11 +227,11 @@ export default function Cards() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2a2d3a', fontSize: 12, color: '#6b7080' }}>
                   <div>
                     <span style={{ display: 'block', color: '#e2e4ef', fontWeight: 500 }}>{fmt(outstanding)}</span>
-                    Outstanding (manual)
+                    Outstanding (seed)
                   </div>
                   <div>
                     <span style={{ display: 'block', color: '#e2e4ef', fontWeight: 500 }}>+ {fmt(thisCycle)}</span>
-                    This cycle ({from.slice(5)} → {to.slice(5)})
+                    {c.bill_day ? `This cycle (${from.slice(5)} → ${to.slice(5)})` : 'This cycle'}
                   </div>
                   <div>
                     <span style={{ display: 'block', fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
@@ -243,17 +243,15 @@ export default function Cards() {
               </div>
             ) : (
               <div style={{ fontSize: 12, color: '#6b7080', fontStyle: 'italic', marginBottom: 12 }}>
-                No limit set — click "Set Limit" to track utilization.
+                No limit set — edit card to set credit limit.
               </div>
             )}
 
             {/* Schedule */}
             <div style={{ paddingTop: 12, borderTop: '1px solid #2a2d3a' }}>
               {[
-                ['Bill cuts',   c.billDate,   '#e2e4ef'],
-                ['Due date',    c.dueDate,    '#e2e4ef'],
-                ['Pay on',      c.payOn,      c.payColor],
-                ['Cycle',       c.trackCycle, '#e2e4ef'],
+                ['Bill cuts', billStr, '#e2e4ef'],
+                ['Due date',  dueStr,  '#e2e4ef'],
               ].map(([label, val, color]) => (
                 <div key={label} style={{ display: 'flex', gap: 8, fontSize: 13, marginBottom: 6 }}>
                   <span style={{ color: '#6b7080', width: 80, flexShrink: 0 }}>{label}:</span>
@@ -287,6 +285,74 @@ export default function Cards() {
           </tbody>
         </table>
       </div>
+
+      {/* Add/Edit card modal */}
+      <Modal
+        title={editingCard ? `Edit ${editingCard.name}` : 'Add Credit Card'}
+        open={cardModalOpen}
+        onCancel={() => setCardModalOpen(false)}
+        onOk={handleSaveCard}
+        okText="Save"
+        confirmLoading={saving}
+        width={480}
+      >
+        <Form form={form} layout="vertical">
+          <Form.Item label="Card Name" name="name" rules={[{ required: true, message: 'Enter card name' }]}>
+            <Input placeholder="e.g. BCA, Mandiri Visa, CIMB" />
+          </Form.Item>
+
+          <Form.Item label="Color" name="color">
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {PRESET_COLORS.map(col => (
+                <div
+                  key={col}
+                  onClick={() => form.setFieldValue('color', col)}
+                  style={{
+                    width: 28, height: 28, borderRadius: '50%', background: col, cursor: 'pointer',
+                    border: form.getFieldValue('color') === col ? '3px solid #fff' : '3px solid transparent',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              ))}
+            </div>
+          </Form.Item>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Bill Day (statement cutoff)" name="bill_day">
+              <InputNumber style={{ width: '100%' }} min={1} max={28} placeholder="e.g. 3, 15, 16" />
+            </Form.Item>
+            <Form.Item label="Due Day" name="due_day">
+              <InputNumber style={{ width: '100%' }} min={1} max={31} placeholder="e.g. 4, 19, 31" />
+            </Form.Item>
+          </div>
+
+          <Form.Item label="Due date is in next month" name="due_next_month" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Credit Limit" name="credit_limit">
+              <InputNumber style={{ width: '100%' }} min={0} step={1000000} placeholder="e.g. 10000000" />
+            </Form.Item>
+            <Form.Item label="Current Outstanding" name="current_balance">
+              <InputNumber style={{ width: '100%' }} min={0} step={100000} placeholder="Balance you owe now" />
+            </Form.Item>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Sort Order" name="sort_order">
+              <InputNumber style={{ width: '100%' }} min={0} placeholder="1, 2, 3..." />
+            </Form.Item>
+            <Form.Item label="Active" name="active" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </div>
+
+          <p style={{ fontSize: 11, color: '#6b7080', margin: 0 }}>
+            "Current Outstanding" = what you already owe before logging transactions in this app.
+          </p>
+        </Form>
+      </Modal>
     </div>
   )
 }

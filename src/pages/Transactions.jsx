@@ -4,8 +4,9 @@ import { SearchOutlined, FilterOutlined, CloseOutlined, UploadOutlined, Download
 import dayjs from 'dayjs'
 import customParseFormat from 'dayjs/plugin/customParseFormat'
 import { fetchTransactions, deleteTransaction, updateTransaction, fetchCategories, addTransactions } from '../lib/supabase'
-import { fmt, fmtDate, CARDS } from '../lib/utils'
+import { fmt, fmtDate } from '../lib/utils'
 import Badge from '../components/Badge'
+import { useCards } from '../contexts/CardsContext'
 
 dayjs.extend(customParseFormat)
 
@@ -89,6 +90,7 @@ const { RangePicker } = DatePicker
 
 export default function Transactions() {
   const { message } = App.useApp()
+  const { cards } = useCards()
   const [txs, setTxs]             = useState([])
   const [loading, setLoading]     = useState(true)
   const [categories, setCategories] = useState([])
@@ -302,7 +304,7 @@ export default function Transactions() {
                 {categories.map(c => <Select.Option key={c.id} value={c.name}>{c.name}</Select.Option>)}
               </Select>
               <Select mode="multiple" placeholder="Payment method" value={selMethods} onChange={setSelMethods} allowClear maxTagCount={1}>
-                {Object.entries(CARDS).map(([k, v]) => <Select.Option key={k} value={k}>{v}</Select.Option>)}
+                {cards.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
               </Select>
               <Select placeholder="Type" value={selType} onChange={setSelType} allowClear>
                 <Select.Option value="expense">Expense</Select.Option>
@@ -363,7 +365,7 @@ export default function Transactions() {
           </div>
           <Form.Item label="Payment Method" name="method" rules={[{ required: true }]}>
             <Select>
-              {Object.entries(CARDS).map(([k, v]) => <Select.Option key={k} value={k}>{v}</Select.Option>)}
+              {cards.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
             </Select>
           </Form.Item>
           <Form.Item label="Category" name="category" rules={[{ required: true }]}>

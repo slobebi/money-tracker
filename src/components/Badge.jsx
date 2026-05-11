@@ -1,11 +1,14 @@
 import { Tag } from 'antd'
-import { CARDS, CARD_BADGE_COLOR } from '../lib/utils'
+import { useCards } from '../contexts/CardsContext'
 
 export default function Badge({ method }) {
-  const { bg, color } = CARD_BADGE_COLOR[method] || { bg: '#ffffff11', color: '#aaa' }
+  const { cardMap } = useCards()
+  const card = cardMap[method]
+  const color = card?.color || '#6b7080'
+  const bg    = color + '22'
   return (
     <Tag style={{ background: bg, color, border: 'none', fontWeight: 600 }}>
-      {CARDS[method]}
+      {card?.name || method}
     </Tag>
   )
 }

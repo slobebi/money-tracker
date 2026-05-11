@@ -1,24 +1,25 @@
 import { useEffect, useState } from 'react'
-import { Button, Form, InputNumber, Input, Modal, Table, Popconfirm, Select, DatePicker, App, Progress } from 'antd'
+import { Button, Form, InputNumber, Input, Modal, Table, Popconfirm, Select, DatePicker, App, Switch } from 'antd'
 import { EditOutlined, PlusOutlined, DeleteOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import {
-  fetchDebitSettings, upsertDebitSettings,
+  addCard, updateCard, deleteCard,
   fetchCardPayments, addCardPayment, deleteCardPayment,
-  fetchTotalIncome, fetchBCADirectExpenses,
+  fetchTotalIncome, fetchDebitExpenses,
   fetchRecurring, addRecurring, updateRecurring, deleteRecurring,
   fetchInstallments, addInstallment, updateInstallment, deleteInstallment,
   fetchCategories,
 } from '../lib/supabase'
-import { fmt, fmtDate, CARDS, CARD_BADGE_COLOR } from '../lib/utils'
+import { fmt, fmtDate } from '../lib/utils'
 import Badge from '../components/Badge'
+import { useCards } from '../contexts/CardsContext'
 
-const CREDIT_CARDS = Object.entries(CARDS).filter(([k]) => k !== 'cash')
+const PRESET_COLORS = ['#6b7080', '#3ecf8e', '#38bdf8', '#a78bfa', '#fb7185', '#f5a623', '#9b94ff', '#6c63ff']
 
 export default function Accounts() {
   const { message } = App.useApp()
+  const { cards, debitCards, creditCards, cardMap, refresh: refreshCards } = useCards()
 
-  const [settings, setSettings]         = useState(null)
   const [totalIncome, setTotalIncome]   = useState(0)
   const [directExp, setDirectExp]       = useState(0)
   const [payments, setPayments]         = useState([])
@@ -27,28 +28,32 @@ export default function Accounts() {
   const [categories, setCategories]     = useState([])
   const [loading, setLoading]           = useState(true)
 
-  const [balanceOpen, setBalanceOpen]         = useState(false)
+  // debit card add/edit modal
+  const [debitModalOpen, setDebitModalOpen] = useState(false)
+  const [editingDebit, setEditingDebit]     = useState(null)
+  const [savingDebit, setSavingDebit]       = useState(false)
+  const [debitForm] = Form.useForm()
+
   const [paymentOpen, setPaymentOpen]         = useState(false)
   const [recurringOpen, setRecurringOpen]     = useState(false)
   const [installmentOpen, setInstallmentOpen] = useState(false)
   const [editingRec, setEditingRec]           = useState(null)
   const [editingInst, setEditingInst]         = useState(null)
 
-  const [balanceForm] = Form.useForm()
-  const [payForm]     = Form.useForm()
-  const [recForm]     = Form.useForm()
-  const [instForm]    = Form.useForm()
+  const [payForm]  = Form.useForm()
+  const [recForm]  = Form.useForm()
+  const [instForm] = Form.useForm()
 
   useEffect(() => { load() }, [])
 
   async function load() {
     setLoading(true)
     try {
-      const [s, inc, exp, pays, recs, insts, cats] = await Promise.all([
-        fetchDebitSettings(), fetchTotalIncome(), fetchBCADirectExpenses(),
+      const [inc, exp, pays, recs, insts, cats] = await Promise.all([
+        fetchTotalIncome(), fetchDebitExpenses(),
         fetchCardPayments(), fetchRecurring(), fetchInstallments(), fetchCategories(),
       ])
-      setSettings(s); setTotalIncome(inc); setDirectExp(exp)
+      setTotalIncome(inc); setDirectExp(exp)
       setPayments(pays); setRecurring(recs); setInstallments(insts); setCategories(cats)
     } catch (e) {
       message.error(e.message)
@@ -57,23 +62,76 @@ export default function Accounts() {
     }
   }
 
-  const totalCardPay  = payments.reduce((s, p) => s + p.amount, 0)
-  const currentBalance = (settings?.initial_balance || 0) + totalIncome - directExp - totalCardPay
-  const salary         = settings?.monthly_salary || 0
+  // ── Debit card balance per card ──────────────────────────────────────────────
+  const totalCardPay = payments.reduce((s, p) => s + p.amount, 0)
 
-  async function handleSaveBalance() {
+  function debitBalance(card) {
+    return (card.current_balance || 0) + totalIncome - directExp - totalCardPay
+  }
+
+  // ── Debit card modal ──────────────────────────────────────────────────────────
+  function openAddDebit() {
+    setEditingDebit(null)
+    debitForm.resetFields()
+    debitForm.setFieldsValue({ color: '#6b7080', active: true, sort_order: debitCards.length + 1 })
+    setDebitModalOpen(true)
+  }
+
+  function openEditDebit(card) {
+    setEditingDebit(card)
+    debitForm.setFieldsValue({
+      name:            card.name,
+      color:           card.color,
+      current_balance: card.current_balance,
+      monthly_salary:  card.monthly_salary,
+      active:          card.active,
+      sort_order:      card.sort_order,
+    })
+    setDebitModalOpen(true)
+  }
+
+  async function handleSaveDebit() {
     try {
-      const v = await balanceForm.validateFields()
-      await upsertDebitSettings({ initial_balance: v.initial_balance, monthly_salary: v.monthly_salary })
-      setSettings(prev => ({ ...prev, initial_balance: v.initial_balance, monthly_salary: v.monthly_salary }))
-      setBalanceOpen(false)
-      message.success('Saved')
+      const v = await debitForm.validateFields()
+      setSavingDebit(true)
+      const payload = {
+        name:            v.name,
+        type:            'debit',
+        color:           v.color,
+        current_balance: v.current_balance || 0,
+        monthly_salary:  v.monthly_salary  || 0,
+        active:          v.active ?? true,
+        sort_order:      v.sort_order || 0,
+      }
+      if (editingDebit) {
+        await updateCard(editingDebit.id, payload)
+        message.success('Account updated')
+      } else {
+        const id = v.name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '') + '_' + Date.now()
+        await addCard({ ...payload, id })
+        message.success('Account added')
+      }
+      await refreshCards()
+      setDebitModalOpen(false)
     } catch (e) {
       if (e?.errorFields) return
+      message.error(e.message)
+    } finally {
+      setSavingDebit(false)
+    }
+  }
+
+  async function handleDeleteDebit(card) {
+    try {
+      await deleteCard(card.id)
+      await refreshCards()
+      message.success(`"${card.name}" deleted`)
+    } catch (e) {
       message.error(e.message)
     }
   }
 
+  // ── Card payments ─────────────────────────────────────────────────────────────
   async function handleAddPayment() {
     try {
       const v = await payForm.validateFields()
@@ -95,13 +153,14 @@ export default function Accounts() {
     } catch (e) { message.error(e.message) }
   }
 
+  // ── Recurring ─────────────────────────────────────────────────────────────────
   function openRecurringModal(rec = null) {
     setEditingRec(rec)
     if (rec) {
       recForm.setFieldsValue({ name: rec.name, amount: rec.amount, type: rec.type, method: rec.method, category: rec.category, note: rec.note, day_of_month: rec.day_of_month })
     } else {
       recForm.resetFields()
-      recForm.setFieldsValue({ type: 'expense', method: 'card1' })
+      recForm.setFieldsValue({ type: 'expense', method: cards[0]?.id || '' })
     }
     setRecurringOpen(true)
   }
@@ -140,6 +199,7 @@ export default function Accounts() {
     } catch (e) { message.error(e.message) }
   }
 
+  // ── Installments ─────────────────────────────────────────────────────────────
   function addMonthsToYM(ym, n) {
     const [y, m] = ym.split('-').map(Number)
     const d = new Date(y, m - 1 + n, 1)
@@ -154,18 +214,14 @@ export default function Accounts() {
     setEditingInst(inst)
     if (inst) {
       instForm.setFieldsValue({
-        description: inst.description,
-        card_id: inst.card_id,
-        monthly_amount: inst.monthly_amount,
-        total_months: inst.total_months,
-        paid_months: inst.paid_months,
-        start_year_month: dayjs(`${inst.start_year_month}-01`),
-        category: inst.category,
-        note: inst.note,
+        description: inst.description, card_id: inst.card_id,
+        monthly_amount: inst.monthly_amount, total_months: inst.total_months,
+        paid_months: inst.paid_months, start_year_month: dayjs(`${inst.start_year_month}-01`),
+        category: inst.category, note: inst.note,
       })
     } else {
       instForm.resetFields()
-      instForm.setFieldsValue({ paid_months: 0, card_id: 'card1', start_year_month: dayjs() })
+      instForm.setFieldsValue({ paid_months: 0, card_id: creditCards[0]?.id || '', start_year_month: dayjs() })
     }
     setInstallmentOpen(true)
   }
@@ -174,14 +230,11 @@ export default function Accounts() {
     try {
       const v = await instForm.validateFields()
       const payload = {
-        description:      v.description,
-        card_id:          v.card_id,
-        monthly_amount:   v.monthly_amount,
-        total_months:     v.total_months,
-        paid_months:      v.paid_months ?? 0,
+        description: v.description, card_id: v.card_id,
+        monthly_amount: v.monthly_amount, total_months: v.total_months,
+        paid_months: v.paid_months ?? 0,
         start_year_month: v.start_year_month.format('YYYY-MM'),
-        category:         v.category,
-        note:             v.note || '',
+        category: v.category, note: v.note || '',
       }
       if (editingInst) {
         await updateInstallment(editingInst.id, payload)
@@ -208,10 +261,11 @@ export default function Accounts() {
   }
 
   const paymentCols = [
-    { title: 'Date',   dataIndex: 'date',    key: 'date',    render: d => fmtDate(d), width: 110 },
-    { title: 'Card',   dataIndex: 'card_id', key: 'card',    render: m => <Badge method={m} /> },
-    { title: 'Note',   dataIndex: 'note',    key: 'note',    render: n => n || '—', responsive: ['sm'] },
-    { title: 'Amount', dataIndex: 'amount',  key: 'amount',  align: 'right', width: 120, render: a => <span style={{ fontWeight: 600, color: '#f25f5c' }}>-{fmt(a)}</span> },
+    { title: 'Date',   dataIndex: 'date',    key: 'date',   render: d => fmtDate(d), width: 110 },
+    { title: 'Card',   dataIndex: 'card_id', key: 'card',   render: m => <Badge method={m} /> },
+    { title: 'Note',   dataIndex: 'note',    key: 'note',   render: n => n || '—', responsive: ['sm'] },
+    { title: 'Amount', dataIndex: 'amount',  key: 'amount', align: 'right', width: 120,
+      render: a => <span style={{ fontWeight: 600, color: '#f25f5c' }}>-{fmt(a)}</span> },
     { title: '', key: 'action', width: 44,
       render: (_, r) => (
         <Popconfirm title="Delete?" onConfirm={() => handleDeletePayment(r.id)} okText="Delete" okButtonProps={{ danger: true }} cancelText="No">
@@ -225,35 +279,61 @@ export default function Accounts() {
     <div>
       <h2 style={{ fontSize: 20, fontWeight: 600, marginBottom: 16, color: '#e2e4ef' }}>Accounts</h2>
 
-      {/* BCA Debit Balance */}
-      <div className="card" style={{ marginBottom: 12, border: `1px solid ${currentBalance >= 0 ? '#3ecf8e33' : '#f25f5c33'}`, background: currentBalance >= 0 ? '#1a2e2a' : '#2e1a1a' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-          <div>
-            <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>BCA Debit</div>
-            <div style={{ fontSize: 32, fontWeight: 800, color: currentBalance >= 0 ? '#3ecf8e' : '#f25f5c', lineHeight: 1.1 }}>
-              {loading ? '...' : (currentBalance < 0 ? '-' : '') + fmt(currentBalance)}
-            </div>
-            {salary > 0 && <div style={{ fontSize: 12, color: '#6b7080', marginTop: 6 }}>Monthly salary: <span style={{ color: '#e2e4ef', fontWeight: 500 }}>{fmt(salary)}</span></div>}
-          </div>
-          <Button icon={<EditOutlined />} onClick={() => {
-            balanceForm.setFieldsValue({ initial_balance: settings?.initial_balance || 0, monthly_salary: settings?.monthly_salary || 0 })
-            setBalanceOpen(true)
-          }}>Edit</Button>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {[
-            { label: 'Initial',         val: fmt(settings?.initial_balance || 0), color: '#e2e4ef' },
-            { label: '+ Income',        val: fmt(totalIncome),                    color: '#3ecf8e' },
-            { label: '− BCA Expenses',  val: fmt(directExp),                      color: '#f25f5c' },
-            { label: '− Card Payments', val: fmt(totalCardPay),                   color: '#f25f5c' },
-          ].map(s => (
-            <div key={s.label} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: s.color }}>{s.val}</div>
-              <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
+      {/* Debit accounts */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Debit Accounts</h3>
+        <Button type="primary" icon={<PlusOutlined />} size="small" onClick={openAddDebit}>Add Account</Button>
       </div>
+
+      {debitCards.length === 0 ? (
+        <div className="card" style={{ textAlign: 'center', color: '#6b7080', fontSize: 13, padding: '24px', marginBottom: 16 }}>
+          No debit accounts yet. Add your bank account(s).
+        </div>
+      ) : (
+        debitCards.map(card => {
+          const bal = debitBalance(card)
+          return (
+            <div key={card.id} className="card" style={{ marginBottom: 12, border: `1px solid ${bal >= 0 ? '#3ecf8e33' : '#f25f5c33'}`, background: bal >= 0 ? '#1a2e2a' : '#2e1a1a' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+                <div>
+                  <div style={{ fontSize: 11, color: card.color || '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4, fontWeight: 600 }}>{card.name}</div>
+                  <div style={{ fontSize: 32, fontWeight: 800, color: bal >= 0 ? '#3ecf8e' : '#f25f5c', lineHeight: 1.1 }}>
+                    {loading ? '...' : (bal < 0 ? '-' : '') + fmt(bal)}
+                  </div>
+                  {card.monthly_salary > 0 && (
+                    <div style={{ fontSize: 12, color: '#6b7080', marginTop: 6 }}>
+                      Monthly salary: <span style={{ color: '#e2e4ef', fontWeight: 500 }}>{fmt(card.monthly_salary)}</span>
+                    </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <Button icon={<EditOutlined />} size="small" onClick={() => openEditDebit(card)}>Edit</Button>
+                  <Popconfirm
+                    title={`Delete "${card.name}"?`}
+                    onConfirm={() => handleDeleteDebit(card)}
+                    okText="Delete" okButtonProps={{ danger: true }} cancelText="No"
+                  >
+                    <Button size="small" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { label: 'Initial',         val: fmt(card.current_balance || 0), color: '#e2e4ef' },
+                  { label: '+ Income',        val: fmt(totalIncome),               color: '#3ecf8e' },
+                  { label: '− Debit Exp.',    val: fmt(directExp),                  color: '#f25f5c' },
+                  { label: '− Card Payments', val: fmt(totalCardPay),               color: '#f25f5c' },
+                ].map(s => (
+                  <div key={s.label} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: s.color }}>{s.val}</div>
+                    <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>{s.label}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })
+      )}
 
       {/* Card Payments */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -268,12 +348,10 @@ export default function Accounts() {
           locale={{ emptyText: 'No payments logged yet.' }} />
       </div>
 
-      {/* Recurring Transactions */}
+      {/* Recurring */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
         <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Recurring Transactions</h3>
-        <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => openRecurringModal()}>
-          Add
-        </Button>
+        <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => openRecurringModal()}>Add</Button>
       </div>
 
       {recurring.length === 0 ? (
@@ -315,9 +393,7 @@ export default function Accounts() {
       {/* Installments */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, marginTop: 8 }}>
         <h3 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>Installments</h3>
-        <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => openInstallmentModal()}>
-          Add
-        </Button>
+        <Button type="primary" icon={<PlusOutlined />} size="small" onClick={() => openInstallmentModal()}>Add</Button>
       </div>
 
       {installments.length === 0 ? (
@@ -363,37 +439,59 @@ export default function Accounts() {
               </div>
 
               <div className="grid grid-cols-3 gap-2">
-                <div style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#e2e4ef' }}>{fmt(inst.monthly_amount)}</div>
-                  <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>per month</div>
-                </div>
-                <div style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: done ? '#3ecf8e' : '#f5a623' }}>{done ? '✓' : remaining}</div>
-                  <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>months left</div>
-                </div>
-                <div style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: done ? '#3ecf8e' : '#f25f5c' }}>
-                    {done ? '✓ 0' : fmt(remaining * inst.monthly_amount)}
+                {[
+                  { label: 'per month',     val: fmt(inst.monthly_amount),                                         color: '#e2e4ef' },
+                  { label: 'months left',   val: done ? '✓' : remaining,                                           color: done ? '#3ecf8e' : '#f5a623' },
+                  { label: 'remaining',     val: done ? '✓ 0' : fmt(remaining * inst.monthly_amount),              color: done ? '#3ecf8e' : '#f25f5c' },
+                ].map(s => (
+                  <div key={s.label} style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: s.color }}>{s.val}</div>
+                    <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>{s.label}</div>
                   </div>
-                  <div style={{ fontSize: 10, color: '#6b7080', marginTop: 2 }}>remaining</div>
-                </div>
+                ))}
               </div>
             </div>
           )
         })
       )}
 
-      {/* Balance modal */}
-      <Modal title="BCA Debit Settings" open={balanceOpen} onCancel={() => setBalanceOpen(false)} onOk={handleSaveBalance} okText="Save" width={380}>
-        <Form form={balanceForm} layout="vertical">
-          <Form.Item label="Current Balance (initial)" name="initial_balance" rules={[{ required: true, type: 'number', min: 0 }]}>
-            <InputNumber style={{ width: '100%' }} min={0} step={100000} placeholder="Your current BCA balance" />
+      {/* Debit account modal */}
+      <Modal
+        title={editingDebit ? `Edit ${editingDebit.name}` : 'Add Debit Account'}
+        open={debitModalOpen} onCancel={() => setDebitModalOpen(false)}
+        onOk={handleSaveDebit} okText="Save" confirmLoading={savingDebit} width={420}
+      >
+        <Form form={debitForm} layout="vertical">
+          <Form.Item label="Account Name" name="name" rules={[{ required: true }]}>
+            <Input placeholder="e.g. BCA Debit, Mandiri, GoPay" />
           </Form.Item>
-          <Form.Item label="Monthly Salary" name="monthly_salary" rules={[{ required: true, type: 'number', min: 0 }]}>
-            <InputNumber style={{ width: '100%' }} min={0} step={500000} placeholder="Your monthly salary" />
+          <Form.Item label="Color" name="color">
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {PRESET_COLORS.map(col => (
+                <div key={col} onClick={() => debitForm.setFieldValue('color', col)}
+                  style={{ width: 28, height: 28, borderRadius: '50%', background: col, cursor: 'pointer',
+                    border: debitForm.getFieldValue('color') === col ? '3px solid #fff' : '3px solid transparent', boxSizing: 'border-box' }} />
+              ))}
+            </div>
           </Form.Item>
-          <p style={{ fontSize: 12, color: '#6b7080' }}>
-            Balance = Initial + All Income − BCA Direct Expenses − Card Payments
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Current Balance (seed)" name="current_balance" rules={[{ required: true, type: 'number', min: 0 }]}>
+              <InputNumber style={{ width: '100%' }} min={0} step={100000} placeholder="Your current balance" />
+            </Form.Item>
+            <Form.Item label="Monthly Salary" name="monthly_salary">
+              <InputNumber style={{ width: '100%' }} min={0} step={500000} placeholder="0 if not applicable" />
+            </Form.Item>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Sort Order" name="sort_order">
+              <InputNumber style={{ width: '100%' }} min={0} />
+            </Form.Item>
+            <Form.Item label="Active" name="active" valuePropName="checked">
+              <Switch />
+            </Form.Item>
+          </div>
+          <p style={{ fontSize: 11, color: '#6b7080', margin: 0 }}>
+            Balance = Seed + All income − Debit expenses − Card payments
           </p>
         </Form>
       </Modal>
@@ -406,8 +504,10 @@ export default function Accounts() {
           </Form.Item>
           <Form.Item label="Credit Card" name="card_id" rules={[{ required: true }]}>
             <Select placeholder="Which card?">
-              {CREDIT_CARDS.map(([k, v]) => (
-                <Select.Option key={k} value={k}><span style={{ color: CARD_BADGE_COLOR[k]?.color }}>{v}</span></Select.Option>
+              {creditCards.map(c => (
+                <Select.Option key={c.id} value={c.id}>
+                  <span style={{ color: c.color }}>{c.name}</span>
+                </Select.Option>
               ))}
             </Select>
           </Form.Item>
@@ -447,7 +547,7 @@ export default function Accounts() {
             </Form.Item>
             <Form.Item label="Method" name="method" rules={[{ required: true }]}>
               <Select>
-                {Object.entries(CARDS).map(([k, v]) => <Select.Option key={k} value={k}>{v}</Select.Option>)}
+                {cards.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
               </Select>
             </Form.Item>
           </div>
@@ -461,6 +561,7 @@ export default function Accounts() {
           </Form.Item>
         </Form>
       </Modal>
+
       {/* Installment modal */}
       <Modal
         title={editingInst ? 'Edit Installment' : 'Add Installment'}
@@ -474,8 +575,10 @@ export default function Accounts() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Form.Item label="Credit Card" name="card_id" rules={[{ required: true }]}>
               <Select>
-                {Object.entries(CARDS).filter(([k]) => k !== 'cash').map(([k, v]) => (
-                  <Select.Option key={k} value={k}><span style={{ color: CARD_BADGE_COLOR[k]?.color }}>{v}</span></Select.Option>
+                {creditCards.map(c => (
+                  <Select.Option key={c.id} value={c.id}>
+                    <span style={{ color: c.color }}>{c.name}</span>
+                  </Select.Option>
                 ))}
               </Select>
             </Form.Item>
@@ -492,8 +595,7 @@ export default function Accounts() {
             </Form.Item>
           </div>
           <Form.Item
-            label="Already Paid Months"
-            name="paid_months"
+            label="Already Paid Months" name="paid_months"
             rules={[{ required: true, type: 'number', min: 0 }]}
             extra="Set > 0 if this installment already started before you used this app"
           >

@@ -5,46 +5,45 @@ import { RightOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOut
 import dayjs from 'dayjs'
 import {
   fetchDebitSettings, fetchTotalIncome, fetchBCADirectExpenses,
-  fetchCardPayments, fetchMonthTransactions, fetchCardLimits,
+  fetchCardPayments, fetchMonthTransactions,
   fetchCycleSpending, fetchBudgets, fetchRecurring,
   fetchMonthConfirmations, fetchRecentTransactions,
   addTransaction, confirmRecurring, skipRecurring, fetchCardDebt,
   fetchInstallments, confirmInstallmentPayment,
 } from '../lib/supabase'
-import { fmt, fmtDate, CARDS, CARD_BADGE_COLOR, CARD_BILL_DAY, currentBillingCycle } from '../lib/utils'
+import { fmt, fmtDate, currentBillingCycle } from '../lib/utils'
 import Badge from '../components/Badge'
-
-const CARD_META = [
-  { id: 'card1', title: 'Tokopedia BRI',  color: '#9b94ff', barColor: '#6c63ff', dueDate: '31st / 1st',       payNote: 'Pay on payday' },
-  { id: 'card2', title: 'Atome Mayapada', color: '#f5a623', barColor: '#f5a623', dueDate: '4th next month',   payNote: 'Pay on payday' },
-  { id: 'card3', title: 'BCA',            color: '#3ecf8e', barColor: '#3ecf8e', dueDate: '19th ⚠️',          payNote: 'Pay 15th–17th' },
-]
+import { useCards } from '../contexts/CardsContext'
 
 export default function Dashboard() {
   const { message } = App.useApp()
   const navigate = useNavigate()
+  const { creditCards, debitCards } = useCards()
   const now = new Date()
   const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
 
   const [loading, setLoading] = useState(true)
   const [data, setData] = useState({
     settings: null, totalIncome: 0, bcaExpenses: 0, cardPayments: [],
-    monthTxs: [], cardLimits: {}, cycleSpending: {}, budgets: {},
+    monthTxs: [], cycleSpending: {}, budgets: {},
     pending: [], recentTxs: [],
-    cardDebt: { card1: 0, card2: 0, card3: 0, total: 0, installmentTotal: 0 },
+    cardDebt: { total: 0, installmentTotal: 0, _creditCardIds: [] },
     pendingInstallments: [],
   })
   const [confirmingInst, setConfirmingInst] = useState(null)
-  const [confirming, setConfirming] = useState(null)
+  const [confirming, setConfirming]         = useState(null)
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    if (creditCards.length === 0) return
+    load()
+  }, [creditCards])
 
   async function load() {
     setLoading(true)
     try {
       const [
         settings, totalIncome, bcaExpenses, cardPayments,
-        monthTxs, cardLimits, budgets, recurring, confirmations, recentTxs, cardDebt, installments,
+        monthTxs, budgets, recurring, confirmations, recentTxs, cardDebt, installments,
         ...cycleArr
       ] = await Promise.all([
         fetchDebitSettings(),
@@ -52,21 +51,20 @@ export default function Dashboard() {
         fetchBCADirectExpenses(),
         fetchCardPayments(),
         fetchMonthTransactions(now.getFullYear(), now.getMonth()),
-        fetchCardLimits(),
         fetchBudgets(),
         fetchRecurring(),
         fetchMonthConfirmations(monthStr),
         fetchRecentTransactions(5),
         fetchCardDebt(),
         fetchInstallments(),
-        ...CARD_META.map(c => {
-          const { from, to } = currentBillingCycle(CARD_BILL_DAY[c.id])
+        ...creditCards.map(c => {
+          const { from, to } = currentBillingCycle(c.bill_day || 1)
           return fetchCycleSpending(c.id, from, to)
         }),
       ])
 
       const cycleSpending = {}
-      CARD_META.forEach((c, i) => { cycleSpending[c.id] = cycleArr[i] })
+      creditCards.forEach((c, i) => { cycleSpending[c.id] = cycleArr[i] })
 
       const confirmedIds = new Set(confirmations.map(c => c.recurring_id))
       const pending = recurring.filter(r =>
@@ -81,7 +79,7 @@ export default function Dashboard() {
         return nextDue <= monthStr
       })
 
-      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cardLimits, cycleSpending, budgets, pending, recentTxs, cardDebt, pendingInstallments })
+      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cycleSpending, budgets, pending, recentTxs, cardDebt, pendingInstallments })
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -90,12 +88,12 @@ export default function Dashboard() {
   }
 
   const totalCardPay  = data.cardPayments.reduce((s, p) => s + p.amount, 0)
-  const bcaBalance    = (data.settings?.initial_balance || 0) + data.totalIncome - data.bcaExpenses - totalCardPay
-  const salary        = data.settings?.monthly_salary || 0
+  const totalInitBal  = debitCards.reduce((s, c) => s + (c.current_balance || 0), 0)
+  const bcaBalance    = totalInitBal + data.totalIncome - data.bcaExpenses - totalCardPay
+  const salary        = debitCards.reduce((s, c) => s + (c.monthly_salary || 0), 0)
   const monthExpenses = data.monthTxs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
   const monthIncome   = data.monthTxs.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0)
 
-  // Budget progress for this month
   const byCat = {}
   data.monthTxs.filter(t => t.type === 'expense').forEach(t => {
     byCat[t.category] = (byCat[t.category] || 0) + t.amount
@@ -108,12 +106,8 @@ export default function Dashboard() {
     setConfirming(rec.id)
     try {
       const tx = await addTransaction({
-        date:     dayjs().format('YYYY-MM-DD'),
-        amount:   rec.amount,
-        type:     rec.type,
-        method:   rec.method,
-        category: rec.category,
-        note:     rec.note || rec.name,
+        date: dayjs().format('YYYY-MM-DD'), amount: rec.amount,
+        type: rec.type, method: rec.method, category: rec.category, note: rec.note || rec.name,
       })
       await confirmRecurring(rec.id, monthStr, tx.id)
       setData(prev => ({ ...prev, pending: prev.pending.filter(r => r.id !== rec.id) }))
@@ -142,22 +136,11 @@ export default function Dashboard() {
     setConfirmingInst(inst.id)
     try {
       const { newPaid } = await confirmInstallmentPayment(inst.id, {
-        date:     dayjs().format('YYYY-MM-DD'),
-        amount:   inst.monthly_amount,
-        type:     'expense',
-        method:   inst.card_id,
-        category: inst.category,
-        note:     inst.note || inst.description,
+        date: dayjs().format('YYYY-MM-DD'), amount: inst.monthly_amount,
+        type: 'expense', method: inst.card_id, category: inst.category, note: inst.note || inst.description,
       })
-      setData(prev => ({
-        ...prev,
-        pendingInstallments: prev.pendingInstallments.filter(i => {
-          if (i.id !== inst.id) return true
-          return false
-        }),
-      }))
-      const completed = newPaid >= inst.total_months
-      message.success(completed ? `"${inst.description}" fully paid off! 🎉` : `Month ${newPaid}/${inst.total_months} logged`)
+      setData(prev => ({ ...prev, pendingInstallments: prev.pendingInstallments.filter(i => i.id !== inst.id) }))
+      message.success(newPaid >= inst.total_months ? `"${inst.description}" fully paid off!` : `Month ${newPaid}/${inst.total_months} logged`)
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -184,9 +167,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* BCA Balance */}
+      {/* Debit Balance */}
       <div className="card" style={{ background: bcaBalance >= 0 ? '#1a2e2a' : '#2e1a1a', border: `1px solid ${bcaBalance >= 0 ? '#3ecf8e33' : '#f25f5c33'}` }}>
-        <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>BCA Debit Balance</div>
+        <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>
+          {debitCards.length === 1 ? debitCards[0].name : 'Debit Balance'}
+        </div>
         <div style={{ fontSize: 34, fontWeight: 800, color: bcaBalance >= 0 ? '#3ecf8e' : '#f25f5c', lineHeight: 1.1 }}>
           {bcaBalance < 0 ? '-' : ''}{fmt(bcaBalance)}
         </div>
@@ -198,25 +183,16 @@ export default function Dashboard() {
       </div>
 
       {/* Total Bill This Cycle */}
-      {(() => {
-        // pending installments (unconfirmed, not yet in transactions)
+      {creditCards.length > 0 && (() => {
         const pendingInstByCard = {}
         data.pendingInstallments.forEach(inst => {
           pendingInstByCard[inst.card_id] = (pendingInstByCard[inst.card_id] || 0) + inst.monthly_amount
         })
 
-        // total remaining installment obligations per card (from cardDebt)
-        const instRemByCard = {
-          card1: data.cardDebt.installmentCard1 || 0,
-          card2: data.cardDebt.installmentCard2 || 0,
-          card3: data.cardDebt.installmentCard3 || 0,
-        }
-
-        // per card: outstanding − total remaining installments (already embedded) + cycle spending + unconfirmed installments this cycle
         const cardBills = {}
-        CARD_META.forEach(c => {
-          const outstanding = data.cardLimits[c.id]?.current_balance || 0
-          const instRem     = instRemByCard[c.id]
+        creditCards.forEach(c => {
+          const outstanding = c.current_balance || 0
+          const instRem     = data.cardDebt[`installment_${c.id}`] || 0
           const pending     = pendingInstByCard[c.id] || 0
           const cycleSpent  = data.cycleSpending[c.id] || 0
           cardBills[c.id]   = Math.max(outstanding - instRem, 0) + cycleSpent + pending
@@ -224,6 +200,11 @@ export default function Dashboard() {
 
         const totalBill        = Object.values(cardBills).reduce((s, v) => s + v, 0)
         const totalPendingInst = Object.values(pendingInstByCard).reduce((s, v) => s + v, 0)
+
+        const dueStr = (c) => {
+          if (!c.due_day) return '—'
+          return `${c.due_day}${['st','nd','rd'][c.due_day-1]||'th'}${c.due_next_month ? ' next month' : ''}`
+        }
 
         return (
           <div className="card" style={{ border: '1px solid #f5a62333', background: '#2a2000' }}>
@@ -237,25 +218,23 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
-              <button
-                onClick={() => navigate('/cards')}
-                style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}
-              >
+              <button onClick={() => navigate('/cards')}
+                style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}>
                 Details <RightOutlined />
               </button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {CARD_META.map(c => {
-                const outstanding = data.cardLimits[c.id]?.current_balance || 0
-                const instRem     = instRemByCard[c.id]
+              {creditCards.map(c => {
+                const outstanding = c.current_balance || 0
+                const instRem     = data.cardDebt[`installment_${c.id}`] || 0
                 const pending     = pendingInstByCard[c.id] || 0
                 const cycleSpent  = data.cycleSpending[c.id] || 0
                 const amount      = cardBills[c.id]
                 return (
                   <div key={c.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'rgba(0,0,0,0.2)', borderRadius: 8 }}>
                     <div>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: c.color }}>{c.title}</span>
-                      <span style={{ fontSize: 11, color: '#6b7080', marginLeft: 8 }}>due {c.dueDate}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: c.color }}>{c.name}</span>
+                      {c.due_day && <span style={{ fontSize: 11, color: '#6b7080', marginLeft: 8 }}>due {dueStr(c)}</span>}
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: amount > 0 ? '#f5a623' : '#6b7080' }}>
@@ -266,13 +245,8 @@ export default function Dashboard() {
                           {fmt(outstanding)} outstanding{instRem > 0 ? ` −${fmt(instRem)} cicilan` : ''}
                         </div>
                       )}
-                      {pending > 0 && (
-                        <div style={{ fontSize: 10, color: '#9b94ff' }}>+{fmt(pending)} cicilan this cycle</div>
-                      )}
-                      {cycleSpent > 0 && (
-                        <div style={{ fontSize: 10, color: '#6b7080' }}>+{fmt(cycleSpent)} this cycle</div>
-                      )}
-                      {amount > 0 && <div style={{ fontSize: 10, color: '#f5a623' }}>{c.payNote}</div>}
+                      {pending > 0 && <div style={{ fontSize: 10, color: '#9b94ff' }}>+{fmt(pending)} cicilan this cycle</div>}
+                      {cycleSpent > 0 && <div style={{ fontSize: 10, color: '#6b7080' }}>+{fmt(cycleSpent)} this cycle</div>}
                     </div>
                   </div>
                 )
@@ -295,23 +269,21 @@ export default function Dashboard() {
                 </div>
               )}
             </div>
-            <button
-              onClick={() => navigate('/accounts')}
-              style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}
-            >
+            <button onClick={() => navigate('/accounts')}
+              style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}>
               Manage <RightOutlined />
             </button>
           </div>
-          <div className="grid grid-cols-3 gap-2">
-            {CARD_META.map(c => (
-              <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {creditCards.map(c => (
+              <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center', minWidth: 90 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: data.cardDebt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
                   {data.cardDebt[c.id] > 0 ? fmt(data.cardDebt[c.id]) : '✓ Paid'}
                 </div>
-                <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.title}</div>
-                {data.cardDebt[`installment${c.id.charAt(0).toUpperCase() + c.id.slice(1)}`] > 0 && (
+                <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.name}</div>
+                {data.cardDebt[`installment_${c.id}`] > 0 && (
                   <div style={{ fontSize: 9, color: '#f5a623', marginTop: 1 }}>
-                    +{fmt(data.cardDebt[`installment${c.id.charAt(0).toUpperCase() + c.id.slice(1)}`])} cicilan
+                    +{fmt(data.cardDebt[`installment_${c.id}`])} cicilan
                   </div>
                 )}
               </div>
@@ -330,10 +302,7 @@ export default function Dashboard() {
             </span>
           </div>
           {data.pendingInstallments.map(inst => (
-            <div key={inst.id} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 0', borderBottom: '1px solid #2a2d3a',
-            }}>
+            <div key={inst.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #2a2d3a' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{inst.description}</div>
                 <div style={{ fontSize: 12, color: '#6b7080' }}>
@@ -342,12 +311,9 @@ export default function Dashboard() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: '#f25f5c' }}>{fmt(inst.monthly_amount)}</span>
-                <button
-                  onClick={() => handleConfirmInstallment(inst)}
-                  disabled={confirmingInst === inst.id}
+                <button onClick={() => handleConfirmInstallment(inst)} disabled={confirmingInst === inst.id}
                   style={{ background: '#3ecf8e22', border: 'none', borderRadius: 6, padding: '5px 8px', color: '#3ecf8e', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
-                  title="Mark as paid"
-                >
+                  title="Mark as paid">
                   <CheckCircleOutlined />
                 </button>
               </div>
@@ -401,10 +367,7 @@ export default function Dashboard() {
             </span>
           </div>
           {data.pending.map(rec => (
-            <div key={rec.id} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 0', borderBottom: '1px solid #2a2d3a',
-            }}>
+            <div key={rec.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #2a2d3a' }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{rec.name}</div>
                 <div style={{ fontSize: 12, color: '#6b7080' }}>
@@ -413,20 +376,14 @@ export default function Dashboard() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: '#f25f5c' }}>{fmt(rec.amount)}</span>
-                <button
-                  onClick={() => handleConfirm(rec)}
-                  disabled={confirming === rec.id}
+                <button onClick={() => handleConfirm(rec)} disabled={confirming === rec.id}
                   style={{ background: '#3ecf8e22', border: 'none', borderRadius: 6, padding: '5px 8px', color: '#3ecf8e', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
-                  title="Confirm"
-                >
+                  title="Confirm">
                   <CheckCircleOutlined />
                 </button>
-                <button
-                  onClick={() => handleSkip(rec)}
-                  disabled={confirming === rec.id}
+                <button onClick={() => handleSkip(rec)} disabled={confirming === rec.id}
                   style={{ background: '#f25f5c22', border: 'none', borderRadius: 6, padding: '5px 8px', color: '#f25f5c', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
-                  title="Skip this month"
-                >
+                  title="Skip this month">
                   <CloseCircleOutlined />
                 </button>
               </div>
@@ -436,43 +393,42 @@ export default function Dashboard() {
       )}
 
       {/* Card Utilization */}
-      <div className="card">
-        <div style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 12 }}>
-          Credit Card Utilization
-        </div>
-        {CARD_META.map(c => {
-          const lim       = data.cardLimits[c.id]
-          const totalLim  = lim?.total_limit || 0
-          const outstanding = lim?.current_balance || 0
-          const cycle     = data.cycleSpending[c.id] || 0
-          const projected = outstanding + cycle
-          const pct       = totalLim > 0 ? Math.min((projected / totalLim) * 100, 100) : 0
-          const barColor  = pct >= 90 ? '#f25f5c' : pct >= 70 ? '#f5a623' : c.barColor
+      {creditCards.length > 0 && (
+        <div className="card">
+          <div style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 12 }}>
+            Credit Card Utilization
+          </div>
+          {creditCards.map(c => {
+            const totalLim    = c.credit_limit    || 0
+            const outstanding = c.current_balance || 0
+            const cycle       = data.cycleSpending[c.id] || 0
+            const projected   = outstanding + cycle
+            const pct         = totalLim > 0 ? Math.min((projected / totalLim) * 100, 100) : 0
+            const barColor    = pct >= 90 ? '#f25f5c' : pct >= 70 ? '#f5a623' : c.color || '#6c63ff'
 
-          return (
-            <div key={c.id} style={{ marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 5 }}>
-                <span style={{ color: c.color, fontWeight: 500 }}>{c.title}</span>
-                {totalLim > 0
-                  ? <span style={{ color: '#6b7080', fontSize: 12 }}>{fmt(projected)} / {fmt(totalLim)}</span>
-                  : <span style={{ color: '#6b7080', fontSize: 11, fontStyle: 'italic' }}>No limit set</span>
-                }
-              </div>
-              {totalLim > 0 && (
-                <div style={{ background: '#0f1117', borderRadius: 6, height: 8, overflow: 'hidden' }}>
-                  <div style={{ height: '100%', borderRadius: 6, background: barColor, width: `${pct.toFixed(1)}%`, transition: 'width .4s' }} />
+            return (
+              <div key={c.id} style={{ marginBottom: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 5 }}>
+                  <span style={{ color: c.color, fontWeight: 500 }}>{c.name}</span>
+                  {totalLim > 0
+                    ? <span style={{ color: '#6b7080', fontSize: 12 }}>{fmt(projected)} / {fmt(totalLim)}</span>
+                    : <span style={{ color: '#6b7080', fontSize: 11, fontStyle: 'italic' }}>No limit set</span>
+                  }
                 </div>
-              )}
-            </div>
-          )
-        })}
-        <button
-          onClick={() => navigate('/cards')}
-          style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}
-        >
-          Manage limits <RightOutlined />
-        </button>
-      </div>
+                {totalLim > 0 && (
+                  <div style={{ background: '#0f1117', borderRadius: 6, height: 8, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', borderRadius: 6, background: barColor, width: `${pct.toFixed(1)}%`, transition: 'width .4s' }} />
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          <button onClick={() => navigate('/cards')}
+            style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0, marginTop: 4 }}>
+            Manage limits <RightOutlined />
+          </button>
+        </div>
+      )}
 
       {/* Budget Progress */}
       {budgetEntries.length > 0 && (
@@ -486,7 +442,7 @@ export default function Dashboard() {
             </button>
           </div>
           {budgetEntries.slice(0, 5).map(({ cat, budget, spent }) => {
-            const pct = Math.min((spent / budget) * 100, 100)
+            const pct  = Math.min((spent / budget) * 100, 100)
             const over = spent > budget
             return (
               <div key={cat} style={{ marginBottom: 10 }}>
@@ -522,9 +478,7 @@ export default function Dashboard() {
                 <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {t.note || t.category}
                 </div>
-                <div style={{ fontSize: 12, color: '#6b7080' }}>
-                  {t.category} · {fmtDate(t.date)}
-                </div>
+                <div style={{ fontSize: 12, color: '#6b7080' }}>{t.category} · {fmtDate(t.date)}</div>
               </div>
               <div style={{ marginLeft: 12, textAlign: 'right' }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: t.type === 'expense' ? '#f25f5c' : '#3ecf8e' }}>
