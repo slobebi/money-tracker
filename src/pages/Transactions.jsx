@@ -1,10 +1,89 @@
-import { useEffect, useState, useMemo } from 'react'
-import { Table, Button, Popconfirm, Input, Select, DatePicker, App } from 'antd'
-import { SearchOutlined, FilterOutlined, CloseOutlined } from '@ant-design/icons'
+import { useEffect, useState, useMemo, useRef } from 'react'
+import { Table, Button, Popconfirm, Input, Select, DatePicker, App, Modal, Tag } from 'antd'
+import { SearchOutlined, FilterOutlined, CloseOutlined, UploadOutlined, DownloadOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { fetchTransactions, deleteTransaction, fetchCategories } from '../lib/supabase'
+import customParseFormat from 'dayjs/plugin/customParseFormat'
+import { fetchTransactions, deleteTransaction, fetchCategories, addTransactions } from '../lib/supabase'
 import { fmt, fmtDate, CARDS } from '../lib/utils'
 import Badge from '../components/Badge'
+
+dayjs.extend(customParseFormat)
+
+// ─── CSV helpers ───────────────────────────────────────────────────────────────
+
+function parseCSVText(text) {
+  const lines = text.trim().split(/\r?\n/)
+  if (lines.length < 2) return []
+  const parseRow = line => {
+    const cells = []; let cell = '', inQ = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (ch === '"') { if (inQ && line[i+1] === '"') { cell += '"'; i++ } else inQ = !inQ }
+      else if (ch === ',' && !inQ) { cells.push(cell.trim()); cell = '' }
+      else cell += ch
+    }
+    cells.push(cell.trim()); return cells
+  }
+  const headers = parseRow(lines[0]).map(h => h.toLowerCase().replace(/\s/g, ''))
+  return lines.slice(1).filter(l => l.trim()).map(line => {
+    const cells = parseRow(line)
+    return Object.fromEntries(headers.map((h, i) => [h, (cells[i] || '').replace(/^"|"$/g, '')]))
+  })
+}
+
+const METHOD_ALIASES = {
+  card1: ['card1', 'tokopedia bri', 'tokopedia', 'bri'],
+  card2: ['card2', 'atome mayapada', 'atome', 'mayapada'],
+  card3: ['card3', 'bca', 'bca credit'],
+  cash:  ['cash', 'bca debit', 'debit'],
+}
+function normalizeMethod(val) {
+  const v = (val || '').toLowerCase().trim()
+  for (const [key, aliases] of Object.entries(METHOD_ALIASES)) {
+    if (aliases.includes(v)) return key
+  }
+  return null
+}
+
+function validateRows(rawRows) {
+  return rawRows.map((row, idx) => {
+    const errors = []
+    const rawDate = (row.date || '').trim()
+    const parsed  = dayjs(rawDate, ['YYYY-MM-DD', 'DD/MM/YYYY', 'DD-MM-YYYY'], true)
+    const date    = parsed.isValid() ? parsed.format('YYYY-MM-DD') : null
+    if (!date) errors.push('Invalid date')
+
+    const amount = parseFloat((row.amount || '').toString().replace(/[,\s]/g, ''))
+    if (isNaN(amount) || amount <= 0) errors.push('Invalid amount')
+
+    const type = (row.type || '').toLowerCase().trim()
+    if (!['expense', 'income'].includes(type)) errors.push('Type must be expense/income')
+
+    const method = normalizeMethod(row.method)
+    if (!method) errors.push(`Unknown method "${row.method}"`)
+
+    const category = (row.category || '').trim()
+    if (!category) errors.push('Category required')
+
+    const note = (row.note || '').trim()
+
+    return {
+      key: idx,
+      rowNum: idx + 2,
+      valid: errors.length === 0,
+      errors,
+      display: { date: rawDate, amount: row.amount, type, method: row.method, category, note },
+      parsed: errors.length === 0 ? { date, amount, type, method, category, note } : null,
+    }
+  })
+}
+
+const SAMPLE_CSV = `date,amount,type,method,category,note
+2026-05-09,52908,expense,card3,Baby Care,Empeng
+2026-05-01,5000000,income,cash,Other,May salary
+2026-05-08,150000,expense,card1,Food & Dining,Lunch with team
+2026-05-07,300000,expense,card2,Shopping,H&M shirt
+2026-05-06,85000,expense,cash,Transport,Grab to office`
 
 const { RangePicker } = DatePicker
 
@@ -14,6 +93,11 @@ export default function Transactions() {
   const [loading, setLoading]     = useState(true)
   const [categories, setCategories] = useState([])
   const [showFilter, setShowFilter] = useState(false)
+
+  const [importOpen, setImportOpen]     = useState(false)
+  const [importRows, setImportRows]     = useState([])
+  const [importing, setImporting]       = useState(false)
+  const fileInputRef = useRef(null)
 
   // Filters
   const [search, setSearch]       = useState('')
@@ -62,6 +146,44 @@ export default function Transactions() {
     }
   }
 
+  function downloadSample() {
+    const a = document.createElement('a')
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(SAMPLE_CSV)
+    a.download = 'sample_transactions.csv'
+    a.click()
+  }
+
+  function handleFileSelect(e) {
+    const file = e.target.files[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      const rows = validateRows(parseCSVText(ev.target.result))
+      setImportRows(rows)
+      setImportOpen(true)
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  async function handleImport() {
+    const valid = importRows.filter(r => r.valid).map(r => r.parsed)
+    if (!valid.length) return
+    setImporting(true)
+    try {
+      await addTransactions(valid)
+      const fresh = await fetchTransactions()
+      setTxs(fresh)
+      setImportOpen(false)
+      setImportRows([])
+      message.success(`${valid.length} transaction${valid.length > 1 ? 's' : ''} imported`)
+    } catch (e) {
+      message.error(e.message)
+    } finally {
+      setImporting(false)
+    }
+  }
+
   function exportCSV() {
     if (!filtered.length) return
     const rows = [['Date', 'Note', 'Category', 'Method', 'Type', 'Amount']]
@@ -106,10 +228,13 @@ export default function Transactions() {
             type={hasFilters ? 'primary' : 'default'}>
             <span className="hidden sm:inline">Filter</span>
           </Button>
-          <Button onClick={exportCSV}>
-            <span className="hidden sm:inline">Export CSV</span>
-            <span className="inline sm:hidden">CSV</span>
+          <Button icon={<UploadOutlined />} onClick={() => fileInputRef.current.click()}>
+            <span className="hidden sm:inline">Import</span>
           </Button>
+          <Button icon={<DownloadOutlined />} onClick={exportCSV}>
+            <span className="hidden sm:inline">Export</span>
+          </Button>
+          <input ref={fileInputRef} type="file" accept=".csv,text/csv" style={{ display: 'none' }} onChange={handleFileSelect} />
         </div>
       </div>
 
@@ -168,6 +293,82 @@ export default function Transactions() {
           locale={{ emptyText: 'No transactions found.' }}
         />
       </div>
+
+      {/* Import preview modal */}
+      <Modal
+        title="Import Transactions from CSV"
+        open={importOpen}
+        onCancel={() => { setImportOpen(false); setImportRows([]) }}
+        width={680}
+        footer={
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <button onClick={downloadSample} style={{ background: 'none', border: 'none', color: '#6c63ff', fontSize: 12, cursor: 'pointer', padding: 0 }}>
+              Download sample CSV
+            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button onClick={() => { setImportOpen(false); setImportRows([]) }}>Cancel</Button>
+              <Button
+                type="primary"
+                loading={importing}
+                disabled={!importRows.some(r => r.valid)}
+                onClick={handleImport}
+              >
+                Import {importRows.filter(r => r.valid).length} valid rows
+              </Button>
+            </div>
+          </div>
+        }
+      >
+        {/* Summary */}
+        {importRows.length > 0 && (
+          <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
+            <div style={{ padding: '8px 14px', borderRadius: 8, background: '#1a2e2a', border: '1px solid #3ecf8e33', fontSize: 13 }}>
+              <span style={{ color: '#3ecf8e', fontWeight: 700 }}>{importRows.filter(r => r.valid).length}</span>
+              <span style={{ color: '#6b7080', marginLeft: 4 }}>valid</span>
+            </div>
+            {importRows.some(r => !r.valid) && (
+              <div style={{ padding: '8px 14px', borderRadius: 8, background: '#2e1a1a', border: '1px solid #f25f5c33', fontSize: 13 }}>
+                <span style={{ color: '#f25f5c', fontWeight: 700 }}>{importRows.filter(r => !r.valid).length}</span>
+                <span style={{ color: '#6b7080', marginLeft: 4 }}>errors (will be skipped)</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <Table
+          dataSource={importRows}
+          rowKey="key"
+          size="small"
+          scroll={{ x: 500 }}
+          pagination={{ pageSize: 10, showSizeChanger: false }}
+          rowClassName={r => r.valid ? '' : 'ant-table-row-error'}
+          columns={[
+            { title: '#', dataIndex: 'rowNum', key: 'rowNum', width: 40 },
+            { title: 'Date',     key: 'date',     width: 95,  render: (_, r) => r.display.date },
+            { title: 'Amount',   key: 'amount',   width: 100, render: (_, r) => r.valid
+              ? <span style={{ color: r.parsed.type === 'expense' ? '#f25f5c' : '#3ecf8e', fontWeight: 600 }}>
+                  {r.parsed.type === 'expense' ? '-' : '+'}{fmt(r.parsed.amount)}
+                </span>
+              : r.display.amount
+            },
+            { title: 'Method',   key: 'method',   width: 110, render: (_, r) => r.valid ? <Badge method={r.parsed.method} /> : <span style={{ color: '#f25f5c', fontSize: 11 }}>{r.display.method}</span> },
+            { title: 'Category', key: 'category', render: (_, r) => r.display.category },
+            { title: 'Status',   key: 'status',   width: 80,  render: (_, r) => r.valid
+              ? <Tag color="green" style={{ fontSize: 10 }}>OK</Tag>
+              : <Tag color="red" style={{ fontSize: 10 }} title={r.errors.join(', ')}>Error</Tag>
+            },
+          ]}
+          expandable={{
+            expandedRowRender: r => !r.valid ? (
+              <div style={{ fontSize: 12, color: '#f25f5c', paddingLeft: 8 }}>
+                {r.errors.map((e, i) => <div key={i}>• {e}</div>)}
+              </div>
+            ) : null,
+            rowExpandable: r => !r.valid,
+            showExpandColumn: importRows.some(r => !r.valid),
+          }}
+        />
+      </Modal>
     </div>
   )
 }
