@@ -22,7 +22,7 @@ const inactiveStyle = { color: '#6b7080', borderColor: 'transparent' }
 
 export default function Layout() {
   return (
-    <div style={{ minHeight: '100vh', background: '#0f1117' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: '#0f1117', overflow: 'hidden' }}>
 
       {/* Desktop top nav */}
       <nav className="hidden sm:flex" style={{
@@ -54,10 +54,12 @@ export default function Layout() {
         <span style={{ fontWeight: 700, fontSize: 16, color: '#6c63ff' }}>💳 Money Tracker</span>
       </header>
 
-      {/* Content */}
-      <main className="pb-24 sm:pb-6" style={{ maxWidth: 860, margin: '0 auto', padding: '16px 12px' }}>
-        <Outlet />
-      </main>
+      {/* Content — fills remaining height and scrolls */}
+      <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch' }}>
+        <main className="pb-24 sm:pb-6" style={{ maxWidth: 860, margin: '0 auto', padding: '16px 12px' }}>
+          <Outlet />
+        </main>
+      </div>
 
       {/* Mobile bottom tab bar */}
       <nav className="flex sm:hidden" style={{

@@ -2,14 +2,27 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body {
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  background-color: #0f1117;
+  /* prevent horizontal bleed on any page */
+  overflow-x: hidden;
+}
+
+body {
   background-color: #0f1117;
   color: #e2e4ef;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  margin: 0;
-  padding: 0;
   /* Prevent text size bump on iOS */
   -webkit-text-size-adjust: 100%;
+  /* Enable momentum scrolling on iOS */
+  -webkit-overflow-scrolling: touch;
+  overflow-x: hidden;
 }
 
 .card {
