@@ -1,9 +1,9 @@
 import { useEffect, useState, useMemo, useRef } from 'react'
-import { Table, Button, Popconfirm, Input, Select, DatePicker, App, Modal, Tag } from 'antd'
-import { SearchOutlined, FilterOutlined, CloseOutlined, UploadOutlined, DownloadOutlined } from '@ant-design/icons'
+import { Table, Button, Popconfirm, Input, Select, DatePicker, App, Modal, Tag, Form, InputNumber } from 'antd'
+import { SearchOutlined, FilterOutlined, CloseOutlined, UploadOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import customParseFormat from 'dayjs/plugin/customParseFormat'
-import { fetchTransactions, deleteTransaction, fetchCategories, addTransactions } from '../lib/supabase'
+import { fetchTransactions, deleteTransaction, updateTransaction, fetchCategories, addTransactions } from '../lib/supabase'
 import { fmt, fmtDate, CARDS } from '../lib/utils'
 import Badge from '../components/Badge'
 
@@ -99,6 +99,10 @@ export default function Transactions() {
   const [importing, setImporting]       = useState(false)
   const fileInputRef = useRef(null)
 
+  const [editingTx, setEditingTx]   = useState(null)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editForm]  = Form.useForm()
+
   // Filters
   const [search, setSearch]       = useState('')
   const [dateRange, setDateRange] = useState(null)
@@ -143,6 +147,41 @@ export default function Transactions() {
       message.success('Deleted')
     } catch (e) {
       message.error(e.message)
+    }
+  }
+
+  function openEdit(tx) {
+    setEditingTx(tx)
+    editForm.setFieldsValue({
+      date:     dayjs(tx.date),
+      amount:   tx.amount,
+      type:     tx.type,
+      method:   tx.method,
+      category: tx.category,
+      note:     tx.note || '',
+    })
+  }
+
+  async function handleSaveEdit() {
+    try {
+      const v = await editForm.validateFields()
+      setEditSaving(true)
+      const updated = await updateTransaction(editingTx.id, {
+        date:     v.date.format('YYYY-MM-DD'),
+        amount:   v.amount,
+        type:     v.type,
+        method:   v.method,
+        category: v.category,
+        note:     v.note || '',
+      })
+      setTxs(prev => prev.map(t => t.id === editingTx.id ? updated : t))
+      setEditingTx(null)
+      message.success('Updated')
+    } catch (e) {
+      if (e?.errorFields) return
+      message.error(e.message)
+    } finally {
+      setEditSaving(false)
     }
   }
 
@@ -210,11 +249,14 @@ export default function Transactions() {
       render: (a, r) => <span style={{ fontWeight: 600, color: r.type === 'expense' ? '#f25f5c' : '#3ecf8e' }}>{r.type === 'expense' ? '-' : '+'}{fmt(a)}</span>,
     },
     {
-      title: '', key: 'action', width: 44,
+      title: '', key: 'action', width: 80,
       render: (_, r) => (
-        <Popconfirm title="Delete?" onConfirm={() => handleDelete(r.id)} okText="Delete" okButtonProps={{ danger: true }} cancelText="No">
-          <Button type="text" size="small" style={{ color: '#6b7080' }}>✕</Button>
-        </Popconfirm>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <Button type="text" size="small" icon={<EditOutlined />} style={{ color: '#6b7080' }} onClick={() => openEdit(r)} />
+          <Popconfirm title="Delete?" onConfirm={() => handleDelete(r.id)} okText="Delete" okButtonProps={{ danger: true }} cancelText="No">
+            <Button type="text" size="small" style={{ color: '#6b7080' }}>✕</Button>
+          </Popconfirm>
+        </div>
       ),
     },
   ]
@@ -293,6 +335,47 @@ export default function Transactions() {
           locale={{ emptyText: 'No transactions found.' }}
         />
       </div>
+
+      {/* Edit transaction modal */}
+      <Modal
+        title="Edit Transaction"
+        open={!!editingTx}
+        onCancel={() => setEditingTx(null)}
+        onOk={handleSaveEdit}
+        okText="Save"
+        confirmLoading={editSaving}
+        width={420}
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item label="Date" name="date" rules={[{ required: true }]}>
+            <DatePicker style={{ width: '100%' }} format="DD MMM YYYY" allowClear={false} />
+          </Form.Item>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Form.Item label="Amount" name="amount" rules={[{ required: true, type: 'number', min: 0.01 }]}>
+              <InputNumber style={{ width: '100%' }} min={0} step={1000} />
+            </Form.Item>
+            <Form.Item label="Type" name="type" rules={[{ required: true }]}>
+              <Select>
+                <Select.Option value="expense">Expense</Select.Option>
+                <Select.Option value="income">Income</Select.Option>
+              </Select>
+            </Form.Item>
+          </div>
+          <Form.Item label="Payment Method" name="method" rules={[{ required: true }]}>
+            <Select>
+              {Object.entries(CARDS).map(([k, v]) => <Select.Option key={k} value={k}>{v}</Select.Option>)}
+            </Select>
+          </Form.Item>
+          <Form.Item label="Category" name="category" rules={[{ required: true }]}>
+            <Select showSearch placeholder="Select category">
+              {categories.map(c => <Select.Option key={c.id} value={c.name}>{c.name}</Select.Option>)}
+            </Select>
+          </Form.Item>
+          <Form.Item label="Note" name="note">
+            <Input placeholder="Optional note" />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       {/* Import preview modal */}
       <Modal

@@ -57,6 +57,17 @@ export async function deleteTransaction(id) {
   if (error) throw error
 }
 
+export async function updateTransaction(id, fields) {
+  const { data, error } = await supabase
+    .from('transactions')
+    .update(fields)
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
 export async function fetchMonthTransactions(year, month) {
   const from = `${year}-${String(month + 1).padStart(2, '0')}-01`
   const lastDay = new Date(year, month + 1, 0).getDate()
