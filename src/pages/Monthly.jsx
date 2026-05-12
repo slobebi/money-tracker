@@ -1,10 +1,13 @@
-import { useEffect, useState } from 'react'
-import { Button, Table, Modal, InputNumber, Form, Select, App } from 'antd'
+import { useEffect, useState, useMemo } from 'react'
+import { Button, Table, Modal, InputNumber, Form, Select, App, DatePicker } from 'antd'
 import { LeftOutlined, RightOutlined, SettingOutlined } from '@ant-design/icons'
+import dayjs from 'dayjs'
 import { fetchMonthTransactions, fetchBudgets, upsertBudget, deleteBudget, fetchDebitSettings, upsertDebitSettings, fetchCategories } from '../lib/supabase'
 import { fmt, fmtDate, monthLabel } from '../lib/utils'
 import Badge from '../components/Badge'
 import BarRow from '../components/BarRow'
+
+const { RangePicker } = DatePicker
 
 export default function Monthly() {
   const { message } = App.useApp()
@@ -16,12 +19,14 @@ export default function Monthly() {
   const [budgets, setBudgets] = useState({})
   const [salary, setSalary]   = useState(0)
   const [categories, setCategories] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading]       = useState(true)
+  const [dateRange, setDateRange]   = useState(null)
   const [budgetOpen, setBudgetOpen] = useState(false)
   const [budgetForm] = Form.useForm()
   const [savingBudget, setSavingBudget] = useState(false)
 
   function changeMonth(dir) {
+    setDateRange(null)
     if (dir === -1) {
       if (month === 0) { setYear(y => y - 1); setMonth(11) }
       else setMonth(m => m - 1)
@@ -29,6 +34,13 @@ export default function Monthly() {
       if (month === 11) { setYear(y => y + 1); setMonth(0) }
       else setMonth(m => m + 1)
     }
+  }
+
+  function jumpToMonth(dayjsVal) {
+    if (!dayjsVal) return
+    setDateRange(null)
+    setYear(dayjsVal.year())
+    setMonth(dayjsVal.month())
   }
 
   useEffect(() => {
@@ -53,12 +65,21 @@ export default function Monthly() {
       .finally(() => setLoading(false))
   }, [year, month])
 
-  const expenses  = txs.filter(t => t.type === 'expense')
-  const incomes   = txs.filter(t => t.type === 'income')
+  const filteredTxs = useMemo(() => {
+    if (!dateRange || !dateRange[0] || !dateRange[1]) return txs
+    const from = dateRange[0].format('YYYY-MM-DD')
+    const to   = dateRange[1].format('YYYY-MM-DD')
+    return txs.filter(t => t.date >= from && t.date <= to)
+  }, [txs, dateRange])
+
+  const isFiltered = !!(dateRange && dateRange[0] && dateRange[1])
+
+  const expenses  = filteredTxs.filter(t => t.type === 'expense')
+  const incomes   = filteredTxs.filter(t => t.type === 'income')
   const totalExp  = expenses.reduce((s, t) => s + t.amount, 0)
   const totalInc  = incomes.reduce((s, t) => s + t.amount, 0)
   const prevExp   = prevTxs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
-  const momDiff   = prevExp > 0 ? ((totalExp - prevExp) / prevExp * 100) : null
+  const momDiff   = !isFiltered && prevExp > 0 ? ((totalExp - prevExp) / prevExp * 100) : null
   const totalBudgeted = Object.values(budgets).reduce((s, v) => s + v, 0)
 
   const byMethod = {}
@@ -118,14 +139,46 @@ export default function Monthly() {
   return (
     <div>
       {/* Month picker */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-        <Button icon={<LeftOutlined />} onClick={() => changeMonth(-1)} />
-        <span style={{ fontSize: 16, fontWeight: 600, minWidth: 155, textAlign: 'center' }}>{monthLabel(year, month)}</span>
-        <Button icon={<RightOutlined />} onClick={() => changeMonth(1)} />
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Button icon={<LeftOutlined />} onClick={() => changeMonth(-1)} />
+          <DatePicker
+            picker="month"
+            value={dayjs(new Date(year, month, 1))}
+            onChange={jumpToMonth}
+            format="MMM YYYY"
+            allowClear={false}
+            style={{ width: 130 }}
+          />
+          <Button icon={<RightOutlined />} onClick={() => changeMonth(1)} />
+        </div>
+        <RangePicker
+          value={dateRange}
+          onChange={v => setDateRange(v)}
+          format="DD MMM"
+          placeholder={['From', 'To']}
+          style={{ flex: 1, minWidth: 200 }}
+          disabledDate={d => {
+            const start = dayjs(new Date(year, month, 1))
+            const end   = dayjs(new Date(year, month + 1, 0))
+            return d.isBefore(start, 'day') || d.isAfter(end, 'day')
+          }}
+        />
+        {isFiltered && (
+          <Button size="small" onClick={() => setDateRange(null)} style={{ color: '#6b7080' }}>
+            Clear
+          </Button>
+        )}
         <Button icon={<SettingOutlined />} onClick={() => setBudgetOpen(true)} style={{ marginLeft: 'auto' }}>
           <span className="hidden sm:inline">Budgets</span>
         </Button>
       </div>
+      {isFiltered && (
+        <div style={{ fontSize: 12, color: '#6b7080', marginBottom: 10 }}>
+          Showing {filteredTxs.length} of {txs.length} transactions ·{' '}
+          {dateRange[0].format('DD MMM')} – {dateRange[1].format('DD MMM YYYY')}
+        </div>
+      )}
 
       {/* Reminders */}
       {isCurrentMonth && d >= 13 && d <= 17 && (
@@ -251,7 +304,7 @@ export default function Monthly() {
         <div style={{ padding: '14px 16px', borderBottom: '1px solid #2a2d3a' }}>
           <span style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Transactions</span>
         </div>
-        <Table dataSource={txs} columns={columns} rowKey="id" loading={loading}
+        <Table dataSource={filteredTxs} columns={columns} rowKey="id" loading={loading}
           scroll={{ x: 480 }} pagination={false} locale={{ emptyText: 'No transactions this month.' }} />
       </div>
 
