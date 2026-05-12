@@ -110,6 +110,17 @@ export async function fetchMonthTransactions(year, month) {
   return data
 }
 
+export async function fetchTransactionsByRange(from, to) {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*')
+    .gte('date', from)
+    .lte('date', to)
+    .order('date', { ascending: false })
+  if (error) throw error
+  return data
+}
+
 // ─── Categories ────────────────────────────────────────────────────────────────
 
 export async function fetchCategories() {

@@ -1,8 +1,12 @@
 import { useEffect, useState, useMemo } from 'react'
 import { Button, Table, Modal, InputNumber, Form, Select, App, DatePicker } from 'antd'
-import { LeftOutlined, RightOutlined, SettingOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, SettingOutlined, FilterOutlined, CloseOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
-import { fetchMonthTransactions, fetchBudgets, upsertBudget, deleteBudget, fetchDebitSettings, upsertDebitSettings, fetchCategories } from '../lib/supabase'
+import {
+  fetchMonthTransactions, fetchTransactionsByRange,
+  fetchBudgets, upsertBudget, deleteBudget,
+  fetchDebitSettings, upsertDebitSettings, fetchCategories,
+} from '../lib/supabase'
 import { fmt, fmtDate, monthLabel } from '../lib/utils'
 import Badge from '../components/Badge'
 import BarRow from '../components/BarRow'
@@ -12,21 +16,35 @@ const { RangePicker } = DatePicker
 export default function Monthly() {
   const { message } = App.useApp()
   const now = new Date()
-  const [year, setYear]     = useState(now.getFullYear())
-  const [month, setMonth]   = useState(now.getMonth())
-  const [txs, setTxs]       = useState([])
-  const [prevTxs, setPrevTxs] = useState([])
-  const [budgets, setBudgets] = useState({})
-  const [salary, setSalary]   = useState(0)
+
+  // Month navigation (drives budget context + default data fetch)
+  const [year, setYear]   = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth())
+
+  // Data
+  const [monthTxs, setMonthTxs]   = useState([])   // full month from DB
+  const [rangeTxs, setRangeTxs]   = useState(null)  // cross-month range from DB, null = not active
+  const [prevTxs, setPrevTxs]     = useState([])
+  const [budgets, setBudgets]     = useState({})
+  const [salary, setSalary]       = useState(0)
   const [categories, setCategories] = useState([])
-  const [loading, setLoading]       = useState(true)
-  const [dateRange, setDateRange]   = useState(null)
-  const [budgetOpen, setBudgetOpen] = useState(false)
+  const [loading, setLoading]     = useState(true)
+  const [rangeLoading, setRangeLoading] = useState(false)
+
+  // Date range filter (can span months)
+  const [dateRange, setDateRange] = useState(null)
+  const isFiltered = !!(dateRange && dateRange[0] && dateRange[1])
+
+  // Which transactions to display/analyse
+  const txs = isFiltered && rangeTxs !== null ? rangeTxs : monthTxs
+
+  const [budgetOpen, setBudgetOpen]   = useState(false)
   const [budgetForm] = Form.useForm()
   const [savingBudget, setSavingBudget] = useState(false)
 
+  // ── Month navigation ──────────────────────────────────────────────────────────
   function changeMonth(dir) {
-    setDateRange(null)
+    clearRange()
     if (dir === -1) {
       if (month === 0) { setYear(y => y - 1); setMonth(11) }
       else setMonth(m => m - 1)
@@ -38,11 +56,17 @@ export default function Monthly() {
 
   function jumpToMonth(dayjsVal) {
     if (!dayjsVal) return
-    setDateRange(null)
+    clearRange()
     setYear(dayjsVal.year())
     setMonth(dayjsVal.month())
   }
 
+  function clearRange() {
+    setDateRange(null)
+    setRangeTxs(null)
+  }
+
+  // ── Fetch month data ──────────────────────────────────────────────────────────
   useEffect(() => {
     setLoading(true)
     const prevMonth = month === 0 ? 11 : month - 1
@@ -55,7 +79,7 @@ export default function Monthly() {
       fetchCategories(),
     ])
       .then(([cur, prev, b, settings, cats]) => {
-        setTxs(cur)
+        setMonthTxs(cur)
         setPrevTxs(prev)
         setBudgets(b)
         setSalary(settings?.monthly_salary || 0)
@@ -65,17 +89,39 @@ export default function Monthly() {
       .finally(() => setLoading(false))
   }, [year, month])
 
-  const filteredTxs = useMemo(() => {
-    if (!dateRange || !dateRange[0] || !dateRange[1]) return txs
-    const from = dateRange[0].format('YYYY-MM-DD')
-    const to   = dateRange[1].format('YYYY-MM-DD')
-    return txs.filter(t => t.date >= from && t.date <= to)
-  }, [txs, dateRange])
+  // ── Fetch range data when user picks a cross-month range ─────────────────────
+  async function applyDateRange(range) {
+    setDateRange(range)
+    if (!range || !range[0] || !range[1]) {
+      setRangeTxs(null)
+      return
+    }
+    const from = range[0].format('YYYY-MM-DD')
+    const to   = range[1].format('YYYY-MM-DD')
 
-  const isFiltered = !!(dateRange && dateRange[0] && dateRange[1])
+    // Check if range is fully within current month — use local data
+    const monthStart = dayjs(new Date(year, month, 1)).format('YYYY-MM-DD')
+    const monthEnd   = dayjs(new Date(year, month + 1, 0)).format('YYYY-MM-DD')
+    if (from >= monthStart && to <= monthEnd) {
+      setRangeTxs(monthTxs.filter(t => t.date >= from && t.date <= to))
+      return
+    }
 
-  const expenses  = filteredTxs.filter(t => t.type === 'expense')
-  const incomes   = filteredTxs.filter(t => t.type === 'income')
+    // Spans outside current month — fetch from DB
+    setRangeLoading(true)
+    try {
+      const data = await fetchTransactionsByRange(from, to)
+      setRangeTxs(data)
+    } catch (e) {
+      message.error(e.message)
+    } finally {
+      setRangeLoading(false)
+    }
+  }
+
+  // ── Computed values ───────────────────────────────────────────────────────────
+  const expenses  = txs.filter(t => t.type === 'expense')
+  const incomes   = txs.filter(t => t.type === 'income')
   const totalExp  = expenses.reduce((s, t) => s + t.amount, 0)
   const totalInc  = incomes.reduce((s, t) => s + t.amount, 0)
   const prevExp   = prevTxs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
@@ -91,6 +137,7 @@ export default function Monthly() {
   const isCurrentMonth = year === now.getFullYear() && month === now.getMonth()
   const d = now.getDate()
 
+  // ── Budget handlers ───────────────────────────────────────────────────────────
   async function handleSaveBudget() {
     try {
       const values = await budgetForm.validateFields()
@@ -136,10 +183,12 @@ export default function Monthly() {
     },
   ]
 
+  const activeLoading = loading || rangeLoading
+
   return (
     <div>
-      {/* Month picker */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+      {/* Month picker + date range filter */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <Button icon={<LeftOutlined />} onClick={() => changeMonth(-1)} />
           <DatePicker
@@ -152,41 +201,41 @@ export default function Monthly() {
           />
           <Button icon={<RightOutlined />} onClick={() => changeMonth(1)} />
         </div>
+
         <RangePicker
           value={dateRange}
-          onChange={v => setDateRange(v)}
-          format="DD MMM"
-          placeholder={['From', 'To']}
-          style={{ flex: 1, minWidth: 200 }}
-          disabledDate={d => {
-            const start = dayjs(new Date(year, month, 1))
-            const end   = dayjs(new Date(year, month + 1, 0))
-            return d.isBefore(start, 'day') || d.isAfter(end, 'day')
-          }}
+          onChange={applyDateRange}
+          format="DD MMM YYYY"
+          placeholder={['Filter from', 'to']}
+          style={{ flex: 1, minWidth: 220 }}
         />
+
         {isFiltered && (
-          <Button size="small" onClick={() => setDateRange(null)} style={{ color: '#6b7080' }}>
+          <Button icon={<CloseOutlined />} size="small" onClick={clearRange} style={{ color: '#6b7080' }}>
             Clear
           </Button>
         )}
+
         <Button icon={<SettingOutlined />} onClick={() => setBudgetOpen(true)} style={{ marginLeft: 'auto' }}>
           <span className="hidden sm:inline">Budgets</span>
         </Button>
       </div>
+
+      {/* Filter info bar */}
       {isFiltered && (
-        <div style={{ fontSize: 12, color: '#6b7080', marginBottom: 10 }}>
-          Showing {filteredTxs.length} of {txs.length} transactions ·{' '}
-          {dateRange[0].format('DD MMM')} – {dateRange[1].format('DD MMM YYYY')}
+        <div style={{ fontSize: 12, marginBottom: 12, padding: '6px 12px', borderRadius: 6, background: '#6c63ff18', border: '1px solid #6c63ff33', color: '#9b94ff', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <FilterOutlined style={{ fontSize: 11 }} />
+          {dateRange[0].format('DD MMM YYYY')} – {dateRange[1].format('DD MMM YYYY')} · {txs.length} transactions
         </div>
       )}
 
       {/* Reminders */}
-      {isCurrentMonth && d >= 13 && d <= 17 && (
+      {!isFiltered && isCurrentMonth && d >= 13 && d <= 17 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontSize: 13, background: '#f5a62318', border: '1px solid #f5a62344', color: '#f5a623' }}>
           Reminder: Pay <strong>BCA</strong> card before the 19th!
         </div>
       )}
-      {isCurrentMonth && d >= 27 && (
+      {!isFiltered && isCurrentMonth && d >= 27 && (
         <div style={{ marginBottom: 12, padding: '10px 16px', borderRadius: 8, fontSize: 13, background: '#6c63ff18', border: '1px solid #6c63ff44', color: '#9b94ff' }}>
           Payday soon — remember to pay <strong>Tokopedia BRI</strong> and <strong>Atome Mayapada</strong>.
         </div>
@@ -206,7 +255,7 @@ export default function Monthly() {
         <div className="card" style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 24, fontWeight: 700, color: '#3ecf8e' }}>{fmt(totalInc)}</div>
           <div style={{ fontSize: 11, color: '#6b7080', marginTop: 4 }}>Total Income</div>
-          {salary > 0 && (
+          {!isFiltered && salary > 0 && (
             <div style={{ fontSize: 11, color: '#6b7080', marginTop: 4 }}>
               Salary: <span style={{ color: '#e2e4ef' }}>{fmt(salary)}</span>
             </div>
@@ -214,17 +263,17 @@ export default function Monthly() {
         </div>
       </div>
 
-      {/* Salary vs budget */}
-      {salary > 0 && totalBudgeted > 0 && (
+      {/* Salary vs budget — only meaningful for full month view */}
+      {!isFiltered && salary > 0 && totalBudgeted > 0 && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 10 }}>
             Salary vs Budget
           </div>
           <div className="grid grid-cols-3 gap-2" style={{ marginBottom: 10 }}>
             {[
-              { label: 'Salary',        val: fmt(salary),        color: '#3ecf8e' },
+              { label: 'Salary',         val: fmt(salary),        color: '#3ecf8e' },
               { label: 'Total Budgeted', val: fmt(totalBudgeted), color: totalBudgeted > salary ? '#f25f5c' : '#f5a623' },
-              { label: 'Actual Spent',  val: fmt(totalExp),      color: totalExp > salary ? '#f25f5c' : '#e2e4ef' },
+              { label: 'Actual Spent',   val: fmt(totalExp),      color: totalExp > salary ? '#f25f5c' : '#e2e4ef' },
             ].map(s => (
               <div key={s.label} style={{ background: '#0f1117', borderRadius: 8, padding: '8px', textAlign: 'center' }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: s.color }}>{s.val}</div>
@@ -245,7 +294,7 @@ export default function Monthly() {
       {Object.keys(budgets).length > 0 && (
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 14 }}>
-            Budget Progress
+            Budget Progress{isFiltered ? ' (filtered spending vs monthly budget)' : ''}
           </div>
           {Object.entries(budgets).sort((a, b) => b[1] - a[1]).map(([cat, budget]) => {
             const spent = byCat[cat] || 0
@@ -261,7 +310,9 @@ export default function Monthly() {
                     <span style={{ fontWeight: 600, color: over ? '#f25f5c' : '#e2e4ef' }}>
                       {fmt(spent)} <span style={{ color: '#6b7080', fontWeight: 400 }}>/ {fmt(budget)}</span>
                     </span>
-                    <button onClick={() => handleRemoveBudget(cat)} style={{ background: 'none', border: 'none', color: '#6b7080', cursor: 'pointer', fontSize: 12, padding: 0 }}>✕</button>
+                    {!isFiltered && (
+                      <button onClick={() => handleRemoveBudget(cat)} style={{ background: 'none', border: 'none', color: '#6b7080', cursor: 'pointer', fontSize: 12, padding: 0 }}>✕</button>
+                    )}
                   </div>
                 </div>
                 <div style={{ background: '#0f1117', borderRadius: 6, height: 7, overflow: 'hidden' }}>
@@ -281,7 +332,7 @@ export default function Monthly() {
       <div className="card" style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 14 }}>By Payment Method</div>
         {Object.keys(byMethod).length === 0
-          ? <div style={{ textAlign: 'center', color: '#6b7080', fontSize: 13, padding: '12px 0' }}>No expenses this month.</div>
+          ? <div style={{ textAlign: 'center', color: '#6b7080', fontSize: 13, padding: '12px 0' }}>No expenses{isFiltered ? ' in this range.' : ' this month.'}</div>
           : Object.entries(byMethod).sort((a, b) => b[1] - a[1]).map(([method, amt]) => (
             <BarRow key={method} amount={amt} total={totalExp} color="#6c63ff" renderLabel={() => <Badge method={method} />} />
           ))
@@ -292,7 +343,7 @@ export default function Monthly() {
       <div className="card" style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 14 }}>By Category</div>
         {Object.keys(byCat).length === 0
-          ? <div style={{ textAlign: 'center', color: '#6b7080', fontSize: 13, padding: '12px 0' }}>No expenses this month.</div>
+          ? <div style={{ textAlign: 'center', color: '#6b7080', fontSize: 13, padding: '12px 0' }}>No expenses{isFiltered ? ' in this range.' : ' this month.'}</div>
           : Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([cat, amt]) => (
             <BarRow key={cat} label={cat} amount={amt} total={totalExp} color="#f5a623" />
           ))
@@ -301,11 +352,12 @@ export default function Monthly() {
 
       {/* Transactions */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '14px 16px', borderBottom: '1px solid #2a2d3a' }}>
+        <div style={{ padding: '14px 16px', borderBottom: '1px solid #2a2d3a', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: 11, color: '#6b7080', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Transactions</span>
+          {isFiltered && <span style={{ fontSize: 11, color: '#9b94ff' }}>{txs.length} results</span>}
         </div>
-        <Table dataSource={filteredTxs} columns={columns} rowKey="id" loading={loading}
-          scroll={{ x: 480 }} pagination={false} locale={{ emptyText: 'No transactions this month.' }} />
+        <Table dataSource={txs} columns={columns} rowKey="id" loading={activeLoading}
+          scroll={{ x: 480 }} pagination={false} locale={{ emptyText: 'No transactions found.' }} />
       </div>
 
       {/* Budget Management Modal */}
