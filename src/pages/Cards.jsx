@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Button, InputNumber, Form, App, Modal, Input, Select, Switch, Popconfirm } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
-import { addCard, updateCard, deleteCard, fetchCycleSpending, fetchCardDebt } from '../lib/supabase'
+import { addCard, updateCard, deleteCard, fetchCycleSpending, fetchCardDebt, fetchInstallments } from '../lib/supabase'
 import { fmt, currentBillingCycle } from '../lib/utils'
 import { useCards } from '../contexts/CardsContext'
 
@@ -11,9 +11,10 @@ export default function Cards() {
   const { message } = App.useApp()
   const { creditCards, refresh } = useCards()
 
-  const [cycling, setCycling]   = useState({})
-  const [debt, setDebt]         = useState({ total: 0, installmentTotal: 0, _creditCardIds: [] })
-  const [loading, setLoading]   = useState(true)
+  const [cycling, setCycling]         = useState({})
+  const [debt, setDebt]               = useState({ total: 0, installmentTotal: 0, _creditCardIds: [] })
+  const [pendingInstByCard, setPendingInstByCard] = useState({})
+  const [loading, setLoading]         = useState(true)
 
   const [cardModalOpen, setCardModalOpen] = useState(false)
   const [editingCard, setEditingCard]     = useState(null)
@@ -28,17 +29,36 @@ export default function Cards() {
   async function loadData() {
     if (creditCards.length === 0) { setLoading(false); return }
     try {
-      const [debtData, ...spending] = await Promise.all([
+      const now = new Date()
+      const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+
+      const [debtData, installments, ...spending] = await Promise.all([
         fetchCardDebt(),
+        fetchInstallments(),
         ...creditCards.map(c => {
           const { from, to } = currentBillingCycle(c.bill_day || 1)
           return fetchCycleSpending(c.id, from, to)
         }),
       ])
+
       setDebt(debtData)
+
       const cyc = {}
       creditCards.forEach((c, i) => { cyc[c.id] = spending[i] })
       setCycling(cyc)
+
+      // Pending installments = due this month but not yet confirmed
+      const pending = {}
+      installments.forEach(inst => {
+        if (inst.paid_months >= inst.total_months) return
+        const [y, m] = inst.start_year_month.split('-').map(Number)
+        const d = new Date(y, m - 1 + inst.paid_months, 1)
+        const nextDue = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+        if (nextDue <= monthStr) {
+          pending[inst.card_id] = (pending[inst.card_id] || 0) + inst.monthly_amount
+        }
+      })
+      setPendingInstByCard(pending)
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -128,27 +148,46 @@ export default function Cards() {
       </div>
 
       {/* Total debt summary */}
-      <div className="card" style={{ marginBottom: 16, border: `1px solid ${debt.total > 0 ? '#f25f5c33' : '#3ecf8e33'}`, background: debt.total > 0 ? '#2e1a1a' : '#1a2e2a' }}>
-        <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total Outstanding Debt</div>
-        <div style={{ fontSize: 28, fontWeight: 800, color: debt.total > 0 ? '#f25f5c' : '#3ecf8e', marginBottom: 10 }}>
-          {debt.total > 0 ? fmt(debt.total) : '✓ All clear'}
-        </div>
-        {creditCards.length > 0 && (
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {creditCards.map(c => (
-              <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center', minWidth: 90 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
-                  {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Paid'}
-                </div>
-                <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.name}</div>
+      {(() => {
+        const grandTotal = debt.total + debt.installmentTotal
+        return (
+          <div className="card" style={{ marginBottom: 16, border: `1px solid ${grandTotal > 0 ? '#f25f5c33' : '#3ecf8e33'}`, background: grandTotal > 0 ? '#2e1a1a' : '#1a2e2a' }}>
+            <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total Outstanding Debt</div>
+            <div style={{ fontSize: 28, fontWeight: 800, color: grandTotal > 0 ? '#f25f5c' : '#3ecf8e', marginBottom: 2 }}>
+              {grandTotal > 0 ? fmt(grandTotal) : '✓ All clear'}
+            </div>
+            {debt.installmentTotal > 0 && (
+              <div style={{ fontSize: 12, color: '#f5a623', marginBottom: 10 }}>
+                incl. {fmt(debt.installmentTotal)} remaining installments
               </div>
-            ))}
+            )}
+            {creditCards.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                {creditCards.map(c => {
+                  const cardInstRem = debt[`installment_${c.id}`] || 0
+                  const cardTotal   = (debt[c.id] || 0) + cardInstRem
+                  return (
+                    <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center', minWidth: 90 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: cardTotal > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                        {cardTotal > 0 ? fmt(cardTotal) : '✓ Paid'}
+                      </div>
+                      {cardInstRem > 0 && (
+                        <div style={{ fontSize: 10, color: '#f5a623', marginTop: 1 }}>
+                          {fmt(cardInstRem)} cicilan
+                        </div>
+                      )}
+                      <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.name}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: '#6b7080', marginTop: 10 }}>
+              Debt = outstanding + tracked expenses − payments + remaining installments
+            </div>
           </div>
-        )}
-        <div style={{ fontSize: 11, color: '#6b7080', marginTop: 10 }}>
-          Debt = initial outstanding + tracked expenses − bill payments logged
-        </div>
-      </div>
+        )
+      })()}
 
       {creditCards.length === 0 && !loading && (
         <div className="card" style={{ textAlign: 'center', color: '#6b7080', padding: '32px', marginBottom: 16 }}>
@@ -157,13 +196,20 @@ export default function Cards() {
       )}
 
       {creditCards.map(c => {
-        const totalLimit  = c.credit_limit    || 0
-        const outstanding = c.current_balance || 0
-        const thisCycle   = cycling[c.id]     || 0
-        const projected   = outstanding + thisCycle
-        const available   = totalLimit - projected
-        const utilPct     = totalLimit > 0 ? Math.min((projected / totalLimit) * 100, 100) : 0
-        const utilColor   = utilPct >= 90 ? '#f25f5c' : utilPct >= 70 ? '#f5a623' : '#3ecf8e'
+        const totalLimit   = c.credit_limit    || 0
+        const outstanding  = c.current_balance || 0
+        const thisCycle    = cycling[c.id]     || 0
+        const pendingInst  = pendingInstByCard[c.id]          || 0
+        const instRem      = debt[`installment_${c.id}`]      || 0  // all remaining months incl. current
+        const futureInst   = Math.max(instRem - pendingInst, 0)     // months beyond current
+
+        // Projected bill = what's due THIS cycle
+        const projected    = outstanding + thisCycle + pendingInst
+        // Total committed = projected + future installment obligations
+        const totalCommitted = outstanding + thisCycle + instRem
+        const available    = totalLimit - totalCommitted
+        const utilPct      = totalLimit > 0 ? Math.min((totalCommitted / totalLimit) * 100, 100) : 0
+        const utilColor    = utilPct >= 90 ? '#f25f5c' : utilPct >= 70 ? '#f5a623' : '#3ecf8e'
         const { from, to } = c.bill_day ? currentBillingCycle(c.bill_day) : { from: '—', to: '—' }
         const accentColor = c.color || '#9b94ff'
         const borderColor = accentColor + '44'
@@ -214,9 +260,9 @@ export default function Cards() {
                 </div>
                 <div className="grid grid-cols-3 gap-2" style={{ marginTop: 12 }}>
                   {[
-                    { label: 'Credit Limit',   val: fmt(totalLimit),             color: '#e2e4ef' },
-                    { label: 'Projected Bill',  val: fmt(projected),              color: '#f25f5c' },
-                    { label: 'Available',       val: fmt(Math.max(available, 0)), color: '#3ecf8e' },
+                    { label: 'Credit Limit',    val: fmt(totalLimit),             color: '#e2e4ef' },
+                    { label: 'This Cycle Bill', val: fmt(projected),              color: '#f25f5c' },
+                    { label: 'Available',        val: available >= 0 ? fmt(available) : `−${fmt(Math.abs(available))}`, color: available >= 0 ? '#3ecf8e' : '#f25f5c' },
                   ].map(s => (
                     <div key={s.label} style={{ background: '#0f1117', borderRadius: 8, padding: '8px 10px', textAlign: 'center' }}>
                       <div style={{ fontSize: 13, fontWeight: 600, color: s.color }}>{s.val}</div>
@@ -224,20 +270,32 @@ export default function Cards() {
                     </div>
                   ))}
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid #2a2d3a', fontSize: 12, color: '#6b7080' }}>
-                  <div>
-                    <span style={{ display: 'block', color: '#e2e4ef', fontWeight: 500 }}>{fmt(outstanding)}</span>
-                    Outstanding (seed)
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #2a2d3a', fontSize: 12, color: '#6b7080', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>Outstanding (seed)</span>
+                    <span style={{ color: '#e2e4ef', fontWeight: 500 }}>{fmt(outstanding)}</span>
                   </div>
-                  <div>
-                    <span style={{ display: 'block', color: '#e2e4ef', fontWeight: 500 }}>+ {fmt(thisCycle)}</span>
-                    {c.bill_day ? `This cycle (${from.slice(5)} → ${to.slice(5)})` : 'This cycle'}
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>+ This cycle {c.bill_day ? `(${from.slice(5)} → ${to.slice(5)})` : ''}</span>
+                    <span style={{ color: '#e2e4ef', fontWeight: 500 }}>+ {fmt(thisCycle)}</span>
                   </div>
-                  <div>
-                    <span style={{ display: 'block', fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                  {pendingInst > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#9b94ff' }}>+ Installment due this month</span>
+                      <span style={{ color: '#9b94ff', fontWeight: 600 }}>+ {fmt(pendingInst)}</span>
+                    </div>
+                  )}
+                  {futureInst > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#f5a623' }}>+ Future installments</span>
+                      <span style={{ color: '#f5a623', fontWeight: 600 }}>+ {fmt(futureInst)}</span>
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 4, borderTop: '1px solid #2a2d3a', marginTop: 2 }}>
+                    <span>Total debt owed</span>
+                    <span style={{ fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
                       {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Paid'}
                     </span>
-                    Total debt owed
                   </div>
                 </div>
               </div>
