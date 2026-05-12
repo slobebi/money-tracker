@@ -196,17 +196,16 @@ export default function Cards() {
       )}
 
       {creditCards.map(c => {
-        const totalLimit   = c.credit_limit    || 0
-        const outstanding  = c.current_balance || 0
-        const thisCycle    = cycling[c.id]     || 0
-        const pendingInst  = pendingInstByCard[c.id]          || 0
-        const instRem      = debt[`installment_${c.id}`]      || 0  // all remaining months incl. current
-        const futureInst   = Math.max(instRem - pendingInst, 0)     // months beyond current
+        const totalLimit   = c.credit_limit || 0
+        const thisCycle    = cycling[c.id]  || 0
+        const pendingInst  = pendingInstByCard[c.id]     || 0
+        const instRem      = debt[`installment_${c.id}`] || 0
+        const futureInst   = Math.max(instRem - pendingInst, 0)
 
-        // Projected bill = what's due THIS cycle
-        const projected    = outstanding + thisCycle + pendingInst
-        // Total committed = projected + future installment obligations
-        const totalCommitted = outstanding + thisCycle + instRem
+        // Projected bill = current cycle charges + installment due this month
+        const projected      = thisCycle + pendingInst
+        // Total committed = current cycle + all remaining installments
+        const totalCommitted = thisCycle + instRem
         const available    = totalLimit - totalCommitted
         const utilPct      = totalLimit > 0 ? Math.min((totalCommitted / totalLimit) * 100, 100) : 0
         const utilColor    = utilPct >= 90 ? '#f25f5c' : utilPct >= 70 ? '#f5a623' : '#3ecf8e'
@@ -272,12 +271,8 @@ export default function Cards() {
                 </div>
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #2a2d3a', fontSize: 12, color: '#6b7080', display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Outstanding (seed)</span>
-                    <span style={{ color: '#e2e4ef', fontWeight: 500 }}>{fmt(outstanding)}</span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>+ This cycle {c.bill_day ? `(${from.slice(5)} → ${to.slice(5)})` : ''}</span>
-                    <span style={{ color: '#e2e4ef', fontWeight: 500 }}>+ {fmt(thisCycle)}</span>
+                    <span>This cycle {c.bill_day ? `(${from.slice(5)} → ${to.slice(5)})` : ''}</span>
+                    <span style={{ color: '#e2e4ef', fontWeight: 500 }}>{fmt(thisCycle)}</span>
                   </div>
                   {pendingInst > 0 && (
                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -292,9 +287,9 @@ export default function Cards() {
                     </div>
                   )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 4, borderTop: '1px solid #2a2d3a', marginTop: 2 }}>
-                    <span>Total debt owed</span>
+                    <span>Current cycle debt</span>
                     <span style={{ fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
-                      {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Paid'}
+                      {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Cleared'}
                     </span>
                   </div>
                 </div>

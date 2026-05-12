@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { currentBillingCycle } from './utils'
 
 const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -342,34 +343,37 @@ export async function confirmInstallmentPayment(id, txData) {
 
 export async function fetchCardDebt() {
   const [
-    { data: txData,   error: txErr   },
-    { data: payData,  error: payErr  },
     { data: cardData, error: cardErr },
     { data: instData, error: instErr },
   ] = await Promise.all([
-    supabase.from('transactions').select('method,amount').eq('type', 'expense'),
-    supabase.from('card_payments').select('card_id,amount'),
-    supabase.from('cards').select('id,type,current_balance').eq('active', true),
+    supabase.from('cards').select('id,type,bill_day').eq('active', true),
     supabase.from('installments').select('card_id,monthly_amount,total_months,paid_months'),
   ])
-  if (txErr)   throw txErr
-  if (payErr)  throw payErr
   if (cardErr) throw cardErr
   if (instErr) throw instErr
 
   const creditCards = (cardData || []).filter(c => c.type === 'credit')
+
+  // Fetch current-cycle expenses for each card in parallel
+  const cycleAmounts = await Promise.all(
+    creditCards.map(c => {
+      const { from, to } = currentBillingCycle(c.bill_day || 1)
+      return fetchCycleSpending(c.id, from, to)
+    })
+  )
+
   const result = {}
+  creditCards.forEach((card, i) => {
+    const cycleSpent = cycleAmounts[i] || 0
+    const instRem = (instData || [])
+      .filter(inst => inst.card_id === card.id)
+      .reduce((s, inst) => s + Math.max(inst.total_months - inst.paid_months, 0) * inst.monthly_amount, 0)
 
-  for (const card of creditCards) {
-    const seed  = card.current_balance || 0
-    const spent = (txData  || []).filter(t => t.method   === card.id).reduce((s, t) => s + t.amount, 0)
-    const paid  = (payData || []).filter(p => p.card_id  === card.id).reduce((s, p) => s + p.amount, 0)
-    const instRem = (instData || []).filter(i => i.card_id === card.id)
-      .reduce((s, i) => s + Math.max(i.total_months - i.paid_months, 0) * i.monthly_amount, 0)
-
-    result[card.id] = Math.max(seed + spent - paid, 0)
+    // Debt = current-cycle charges only. Card payments settle previous-cycle bills
+    // so they never reduce the current cycle's running balance.
+    result[card.id] = cycleSpent
     result[`installment_${card.id}`] = instRem
-  }
+  })
 
   result.total = creditCards.reduce((s, c) => s + (result[c.id] || 0), 0)
   result.installmentTotal = creditCards.reduce((s, c) => s + (result[`installment_${c.id}`] || 0), 0)
