@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Table, Button, Popconfirm, Input, Select, DatePicker, App, Modal, Tag, Form, InputNumber } from 'antd'
 import { SearchOutlined, FilterOutlined, CloseOutlined, UploadOutlined, DownloadOutlined, EditOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
@@ -88,13 +88,19 @@ const SAMPLE_CSV = `date,amount,type,method,category,note
 
 const { RangePicker } = DatePicker
 
+const PAGE_SIZE = 20
+
 export default function Transactions() {
   const { message } = App.useApp()
   const { cards } = useCards()
   const [txs, setTxs]             = useState([])
+  const [total, setTotal]         = useState(0)
+  const [page, setPage]           = useState(1)
   const [loading, setLoading]     = useState(true)
   const [categories, setCategories] = useState([])
   const [showFilter, setShowFilter] = useState(false)
+  const [sortField, setSortField] = useState('date')
+  const [sortOrder, setSortOrder] = useState('descend')
 
   const [importOpen, setImportOpen]     = useState(false)
   const [importRows, setImportRows]     = useState([])
@@ -106,47 +112,66 @@ export default function Transactions() {
   const [editForm]  = Form.useForm()
 
   // Filters
-  const [search, setSearch]       = useState('')
-  const [dateRange, setDateRange] = useState(null)
-  const [selCats, setSelCats]     = useState([])
+  const [search, setSearch]         = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [dateRange, setDateRange]   = useState(null)
+  const [selCats, setSelCats]       = useState([])
   const [selMethods, setSelMethods] = useState([])
-  const [selType, setSelType]     = useState(null)
+  const [selType, setSelType]       = useState(null)
 
+  // Debounce search input
   useEffect(() => {
-    Promise.all([fetchTransactions(), fetchCategories()])
-      .then(([data, cats]) => { setTxs(data); setCategories(cats) })
-      .catch(e => message.error(e.message))
-      .finally(() => setLoading(false))
+    const t = setTimeout(() => setDebouncedSearch(search), 300)
+    return () => clearTimeout(t)
+  }, [search])
+
+  // Load categories once
+  useEffect(() => {
+    fetchCategories().then(setCategories).catch(e => message.error(e.message))
   }, [])
+
+  // Re-fetch page 1 whenever filters or sort changes
+  useEffect(() => {
+    loadPage(1)
+  }, [debouncedSearch, dateRange, selCats, selMethods, selType, sortField, sortOrder])
+
+  async function loadPage(p) {
+    setLoading(true)
+    try {
+      const { data, count } = await fetchTransactions({
+        page: p,
+        pageSize: PAGE_SIZE,
+        search: debouncedSearch,
+        dateFrom: dateRange?.[0]?.format('YYYY-MM-DD') ?? null,
+        dateTo:   dateRange?.[1]?.format('YYYY-MM-DD') ?? null,
+        categories: selCats,
+        methods:    selMethods,
+        type:       selType,
+        sortField,
+        sortOrder,
+      })
+      setTxs(data)
+      setTotal(count)
+      setPage(p)
+    } catch (e) {
+      message.error(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const hasFilters = search || dateRange || selCats.length || selMethods.length || selType
 
   function clearFilters() {
-    setSearch(''); setDateRange(null); setSelCats([]); setSelMethods([]); setSelType(null)
+    setSearch(''); setDebouncedSearch(''); setDateRange(null)
+    setSelCats([]); setSelMethods([]); setSelType(null)
   }
-
-  const filtered = useMemo(() => {
-    let data = txs
-    if (search) {
-      const q = search.toLowerCase()
-      data = data.filter(t => (t.note || '').toLowerCase().includes(q) || t.category.toLowerCase().includes(q))
-    }
-    if (dateRange && dateRange[0] && dateRange[1]) {
-      const from = dateRange[0].format('YYYY-MM-DD')
-      const to   = dateRange[1].format('YYYY-MM-DD')
-      data = data.filter(t => t.date >= from && t.date <= to)
-    }
-    if (selCats.length)    data = data.filter(t => selCats.includes(t.category))
-    if (selMethods.length) data = data.filter(t => selMethods.includes(t.method))
-    if (selType)           data = data.filter(t => t.type === selType)
-    return data
-  }, [txs, search, dateRange, selCats, selMethods, selType])
 
   async function handleDelete(id) {
     try {
       await deleteTransaction(id)
-      setTxs(prev => prev.filter(t => t.id !== id))
       message.success('Deleted')
+      loadPage(page)
     } catch (e) {
       message.error(e.message)
     }
@@ -168,7 +193,7 @@ export default function Transactions() {
     try {
       const v = await editForm.validateFields()
       setEditSaving(true)
-      const updated = await updateTransaction(editingTx.id, {
+      await updateTransaction(editingTx.id, {
         date:     v.date.format('YYYY-MM-DD'),
         amount:   v.amount,
         type:     v.type,
@@ -176,9 +201,9 @@ export default function Transactions() {
         category: v.category,
         note:     v.note || '',
       })
-      setTxs(prev => prev.map(t => t.id === editingTx.id ? updated : t))
       setEditingTx(null)
       message.success('Updated')
+      loadPage(page)
     } catch (e) {
       if (e?.errorFields) return
       message.error(e.message)
@@ -213,11 +238,10 @@ export default function Transactions() {
     setImporting(true)
     try {
       await addTransactions(valid)
-      const fresh = await fetchTransactions()
-      setTxs(fresh)
       setImportOpen(false)
       setImportRows([])
       message.success(`${valid.length} transaction${valid.length > 1 ? 's' : ''} imported`)
+      loadPage(1)
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -225,30 +249,54 @@ export default function Transactions() {
     }
   }
 
-  function exportCSV() {
-    if (!filtered.length) return
-    const rows = [['Date', 'Note', 'Category', 'Method', 'Type', 'Amount']]
-    filtered.forEach(t => rows.push([t.date, t.note || '', t.category, t.method, t.type, t.amount]))
-    const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
-    const a = document.createElement('a')
-    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv)
-    a.download = 'transactions.csv'
-    a.click()
+  async function exportCSV() {
+    try {
+      // Fetch all matching records (no pagination) for export
+      const { data: all } = await fetchTransactions({
+        page: 1, pageSize: 100000,
+        search: debouncedSearch,
+        dateFrom: dateRange?.[0]?.format('YYYY-MM-DD') ?? null,
+        dateTo:   dateRange?.[1]?.format('YYYY-MM-DD') ?? null,
+        categories: selCats, methods: selMethods, type: selType,
+        sortField, sortOrder,
+      })
+      if (!all.length) return
+      const rows = [['Date', 'Note', 'Category', 'Method', 'Type', 'Amount']]
+      all.forEach(t => rows.push([t.date, t.note || '', t.category, t.method, t.type, t.amount]))
+      const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+      const a = document.createElement('a')
+      a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv)
+      a.download = 'transactions.csv'
+      a.click()
+    } catch (e) {
+      message.error(e.message)
+    }
   }
 
   const columns = [
-    { title: 'Date',     dataIndex: 'date',     key: 'date',     render: d => fmtDate(d), width: 110 },
-    { title: 'Note',     dataIndex: 'note',     key: 'note',     render: (n, r) => (
+    {
+      title: 'Date', dataIndex: 'date', key: 'date', width: 110,
+      render: d => fmtDate(d),
+      sorter: true,
+      sortOrder: sortField === 'date' ? sortOrder : null,
+    },
+    { title: 'Note', dataIndex: 'note', key: 'note', render: (n, r) => (
       <div>
         <div style={{ fontSize: 13 }}>{n || <span style={{ color: '#6b7080' }}>—</span>}</div>
         {r.split_id && <span style={{ fontSize: 10, background: '#6c63ff22', color: '#9b94ff', padding: '1px 5px', borderRadius: 8, fontWeight: 600 }}>SPLIT</span>}
       </div>
     ), ellipsis: true },
-    { title: 'Category', dataIndex: 'category', key: 'category', responsive: ['sm'] },
-    { title: 'Method',   dataIndex: 'method',   key: 'method',   render: m => <Badge method={m} />, width: 140 },
+    {
+      title: 'Category', dataIndex: 'category', key: 'category', responsive: ['sm'],
+      sorter: true,
+      sortOrder: sortField === 'category' ? sortOrder : null,
+    },
+    { title: 'Method', dataIndex: 'method', key: 'method', render: m => <Badge method={m} />, width: 140 },
     {
       title: 'Amount', dataIndex: 'amount', key: 'amount', align: 'right', width: 120,
       render: (a, r) => <span style={{ fontWeight: 600, color: r.type === 'expense' ? '#f25f5c' : '#3ecf8e' }}>{r.type === 'expense' ? '-' : '+'}{fmt(a)}</span>,
+      sorter: true,
+      sortOrder: sortField === 'amount' ? sortOrder : null,
     },
     {
       title: '', key: 'action', width: 80,
@@ -320,20 +368,33 @@ export default function Transactions() {
         </div>
       )}
 
-      {hasFilters && (
+      {(hasFilters || total > 0) && (
         <div style={{ fontSize: 12, color: '#6b7080', marginBottom: 8 }}>
-          Showing {filtered.length} of {txs.length} transactions
+          {hasFilters ? `${total} matching transactions` : `${total} transactions`}
         </div>
       )}
 
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <Table
-          dataSource={filtered}
+          dataSource={txs}
           columns={columns}
           rowKey="id"
           loading={loading}
           scroll={{ x: 480 }}
-          pagination={{ pageSize: 20, showSizeChanger: false }}
+          showSorterTooltip={false}
+          pagination={{
+            current: page,
+            pageSize: PAGE_SIZE,
+            total,
+            showSizeChanger: false,
+            onChange: p => loadPage(p),
+          }}
+          onChange={(_, __, sorter) => {
+            if (sorter?.columnKey) {
+              setSortField(sorter.columnKey)
+              setSortOrder(sorter.order || 'descend')
+            }
+          }}
           locale={{ emptyText: 'No transactions found.' }}
         />
       </div>

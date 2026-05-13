@@ -40,13 +40,38 @@ export async function deleteCard(id) {
 
 // ─── Transactions ──────────────────────────────────────────────────────────────
 
-export async function fetchTransactions() {
-  const { data, error } = await supabase
+export async function fetchTransactions({
+  page = 1,
+  pageSize = 20,
+  search = '',
+  dateFrom = null,
+  dateTo = null,
+  categories = [],
+  methods = [],
+  type = null,
+  sortField = 'date',
+  sortOrder = 'descend',
+} = {}) {
+  let query = supabase
     .from('transactions')
-    .select('*')
-    .order('date', { ascending: false })
+    .select('*', { count: 'exact' })
+    .order(sortField, { ascending: sortOrder === 'ascend' })
+
+  if (sortField !== 'date') query = query.order('date', { ascending: false })
+
+  if (search) query = query.or(`note.ilike.%${search}%,category.ilike.%${search}%`)
+  if (dateFrom) query = query.gte('date', dateFrom)
+  if (dateTo)   query = query.lte('date', dateTo)
+  if (categories.length) query = query.in('category', categories)
+  if (methods.length)    query = query.in('method', methods)
+  if (type)              query = query.eq('type', type)
+
+  const from = (page - 1) * pageSize
+  query = query.range(from, from + pageSize - 1)
+
+  const { data, error, count } = await query
   if (error) throw error
-  return data
+  return { data: data || [], count: count || 0 }
 }
 
 export async function fetchRecentTransactions(limit = 5) {
