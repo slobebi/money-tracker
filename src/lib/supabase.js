@@ -100,10 +100,11 @@ export async function updateTransaction(id, fields) {
 export async function fetchMonthTransactions(year, month) {
   const from = `${year}-${String(month + 1).padStart(2, '0')}-01`
   const lastDay = new Date(year, month + 1, 0).getDate()
-  const to   = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+  const to = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
+    .neq('category', 'Transfer')
     .gte('date', from)
     .lte('date', to)
     .order('date', { ascending: false })
@@ -115,6 +116,7 @@ export async function fetchTransactionsByRange(from, to) {
   const { data, error } = await supabase
     .from('transactions')
     .select('*')
+    .neq('category', 'Transfer')
     .gte('date', from)
     .lte('date', to)
     .order('date', { ascending: false })
@@ -205,7 +207,7 @@ export async function fetchDebitSettings() {
   const cards = data || []
   return {
     initial_balance: cards.reduce((s, c) => s + (c.current_balance || 0), 0),
-    monthly_salary:  cards.reduce((s, c) => s + (c.monthly_salary  || 0), 0),
+    monthly_salary: cards.reduce((s, c) => s + (c.monthly_salary || 0), 0),
   }
 }
 
@@ -215,7 +217,7 @@ export async function upsertDebitSettings(fields, cardId) {
     // Update specific debit card
     const mapped = {}
     if (fields.initial_balance !== undefined) mapped.current_balance = fields.initial_balance
-    if (fields.monthly_salary  !== undefined) mapped.monthly_salary  = fields.monthly_salary
+    if (fields.monthly_salary !== undefined) mapped.monthly_salary = fields.monthly_salary
     await updateCard(cardId, mapped)
     return
   }
@@ -226,7 +228,7 @@ export async function upsertDebitSettings(fields, cardId) {
   if (!data) return
   const mapped = {}
   if (fields.initial_balance !== undefined) mapped.current_balance = fields.initial_balance
-  if (fields.monthly_salary  !== undefined) mapped.monthly_salary  = fields.monthly_salary
+  if (fields.monthly_salary !== undefined) mapped.monthly_salary = fields.monthly_salary
   await updateCard(data.id, mapped)
 }
 

@@ -18,17 +18,17 @@ export default function Monthly() {
   const now = new Date()
 
   // Month navigation (drives budget context + default data fetch)
-  const [year, setYear]   = useState(now.getFullYear())
+  const [year, setYear] = useState(now.getFullYear())
   const [month, setMonth] = useState(now.getMonth())
 
   // Data
-  const [monthTxs, setMonthTxs]   = useState([])   // full month from DB
-  const [rangeTxs, setRangeTxs]   = useState(null)  // cross-month range from DB, null = not active
-  const [prevTxs, setPrevTxs]     = useState([])
-  const [budgets, setBudgets]     = useState({})
-  const [salary, setSalary]       = useState(0)
+  const [monthTxs, setMonthTxs] = useState([])   // full month from DB
+  const [rangeTxs, setRangeTxs] = useState(null)  // cross-month range from DB, null = not active
+  const [prevTxs, setPrevTxs] = useState([])
+  const [budgets, setBudgets] = useState({})
+  const [salary, setSalary] = useState(0)
   const [categories, setCategories] = useState([])
-  const [loading, setLoading]     = useState(true)
+  const [loading, setLoading] = useState(true)
   const [rangeLoading, setRangeLoading] = useState(false)
 
   // Date range filter (can span months)
@@ -38,7 +38,7 @@ export default function Monthly() {
   // Which transactions to display/analyse
   const txs = isFiltered && rangeTxs !== null ? rangeTxs : monthTxs
 
-  const [budgetOpen, setBudgetOpen]   = useState(false)
+  const [budgetOpen, setBudgetOpen] = useState(false)
   const [budgetForm] = Form.useForm()
   const [savingBudget, setSavingBudget] = useState(false)
 
@@ -70,7 +70,7 @@ export default function Monthly() {
   useEffect(() => {
     setLoading(true)
     const prevMonth = month === 0 ? 11 : month - 1
-    const prevYear  = month === 0 ? year - 1 : year
+    const prevYear = month === 0 ? year - 1 : year
     Promise.all([
       fetchMonthTransactions(year, month),
       fetchMonthTransactions(prevYear, prevMonth),
@@ -97,11 +97,11 @@ export default function Monthly() {
       return
     }
     const from = range[0].format('YYYY-MM-DD')
-    const to   = range[1].format('YYYY-MM-DD')
+    const to = range[1].format('YYYY-MM-DD')
 
     // Check if range is fully within current month — use local data
     const monthStart = dayjs(new Date(year, month, 1)).format('YYYY-MM-DD')
-    const monthEnd   = dayjs(new Date(year, month + 1, 0)).format('YYYY-MM-DD')
+    const monthEnd = dayjs(new Date(year, month + 1, 0)).format('YYYY-MM-DD')
     if (from >= monthStart && to <= monthEnd) {
       setRangeTxs(monthTxs.filter(t => t.date >= from && t.date <= to))
       return
@@ -120,12 +120,12 @@ export default function Monthly() {
   }
 
   // ── Computed values ───────────────────────────────────────────────────────────
-  const expenses  = txs.filter(t => t.type === 'expense')
-  const incomes   = txs.filter(t => t.type === 'income')
-  const totalExp  = expenses.reduce((s, t) => s + t.amount, 0)
-  const totalInc  = incomes.reduce((s, t) => s + t.amount, 0)
-  const prevExp   = prevTxs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
-  const momDiff   = !isFiltered && prevExp > 0 ? ((totalExp - prevExp) / prevExp * 100) : null
+  const expenses = txs.filter(t => t.type === 'expense')
+  const incomes = txs.filter(t => t.type === 'income')
+  const totalExp = expenses.reduce((s, t) => s + t.amount, 0)
+  const totalInc = incomes.reduce((s, t) => s + t.amount, 0)
+  const prevExp = prevTxs.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+  const momDiff = !isFiltered && prevExp > 0 ? ((totalExp - prevExp) / prevExp * 100) : null
   const totalBudgeted = Object.values(budgets).reduce((s, v) => s + v, 0)
 
   const byMethod = {}
@@ -169,10 +169,10 @@ export default function Monthly() {
   }
 
   const columns = [
-    { title: 'Date',     dataIndex: 'date',     key: 'date',     render: d => fmtDate(d), width: 110 },
-    { title: 'Note',     dataIndex: 'note',     key: 'note',     render: n => n || '—', ellipsis: true, responsive: ['sm'] },
+    { title: 'Date', dataIndex: 'date', key: 'date', render: d => fmtDate(d), width: 110 },
+    { title: 'Note', dataIndex: 'note', key: 'note', render: n => n || '—', ellipsis: true, responsive: ['sm'] },
     { title: 'Category', dataIndex: 'category', key: 'category', ellipsis: true },
-    { title: 'Method',   dataIndex: 'method',   key: 'method',   render: m => <Badge method={m} />, width: 140 },
+    { title: 'Method', dataIndex: 'method', key: 'method', render: m => <Badge method={m} />, width: 140 },
     {
       title: 'Amount', dataIndex: 'amount', key: 'amount', align: 'right', width: 120,
       render: (a, r) => (
@@ -242,8 +242,8 @@ export default function Monthly() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 gap-3" style={{ marginBottom: 12 }}>
-        <div className="card" style={{ textAlign: 'center' }}>
+      <div className="flex gap-3" style={{ marginBottom: 12 }}>
+        <div className="card w-full shrink" style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 24, fontWeight: 700, color: '#f25f5c' }}>{fmt(totalExp)}</div>
           <div style={{ fontSize: 11, color: '#6b7080', marginTop: 4 }}>Total Spending</div>
           {momDiff !== null && (
@@ -252,7 +252,7 @@ export default function Monthly() {
             </div>
           )}
         </div>
-        <div className="card" style={{ textAlign: 'center' }}>
+        {totalInc > 0 && (<div className="card w-full shrink" style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 24, fontWeight: 700, color: '#3ecf8e' }}>{fmt(totalInc)}</div>
           <div style={{ fontSize: 11, color: '#6b7080', marginTop: 4 }}>Total Income</div>
           {!isFiltered && salary > 0 && (
@@ -260,7 +260,8 @@ export default function Monthly() {
               Salary: <span style={{ color: '#e2e4ef' }}>{fmt(salary)}</span>
             </div>
           )}
-        </div>
+        </div>)}
+
       </div>
 
       {/* Salary vs budget — only meaningful for full month view */}
@@ -271,9 +272,9 @@ export default function Monthly() {
           </div>
           <div className="grid grid-cols-3 gap-2" style={{ marginBottom: 10 }}>
             {[
-              { label: 'Salary',         val: fmt(salary),        color: '#3ecf8e' },
+              { label: 'Salary', val: fmt(salary), color: '#3ecf8e' },
               { label: 'Total Budgeted', val: fmt(totalBudgeted), color: totalBudgeted > salary ? '#f25f5c' : '#f5a623' },
-              { label: 'Actual Spent',   val: fmt(totalExp),      color: totalExp > salary ? '#f25f5c' : '#e2e4ef' },
+              { label: 'Actual Spent', val: fmt(totalExp), color: totalExp > salary ? '#f25f5c' : '#e2e4ef' },
             ].map(s => (
               <div key={s.label} style={{ background: '#0f1117', borderRadius: 8, padding: '8px', textAlign: 'center' }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: s.color }}>{s.val}</div>
@@ -298,7 +299,7 @@ export default function Monthly() {
           </div>
           {Object.entries(budgets).sort((a, b) => b[1] - a[1]).map(([cat, budget]) => {
             const spent = byCat[cat] || 0
-            const over  = spent > budget
+            const over = spent > budget
             return (
               <div key={cat} style={{ marginBottom: 10 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4 }}>
