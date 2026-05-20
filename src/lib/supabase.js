@@ -372,34 +372,63 @@ export async function fetchCardDebt() {
   const [
     { data: cardData, error: cardErr },
     { data: instData, error: instErr },
+    { data: payData,  error: payErr  },
   ] = await Promise.all([
     supabase.from('cards').select('id,type,bill_day').eq('active', true),
     supabase.from('installments').select('card_id,monthly_amount,total_months,paid_months'),
+    supabase.from('card_payments').select('card_id,amount,date'),
   ])
   if (cardErr) throw cardErr
   if (instErr) throw instErr
+  if (payErr)  throw payErr
 
   const creditCards = (cardData || []).filter(c => c.type === 'credit')
 
-  // Fetch current-cycle expenses for each card in parallel
-  const cycleAmounts = await Promise.all(
-    creditCards.map(c => {
-      const { from, to } = currentBillingCycle(c.bill_day || 1)
-      return fetchCycleSpending(c.id, from, to)
-    })
+  const pad = n => String(n).padStart(2, '0')
+  const fmtD = dt => `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`
+
+  // Compute cycle windows per card
+  const cycles = creditCards.map(c => {
+    const { from: cycleFrom, to: cycleTo } = currentBillingCycle(c.bill_day || 1)
+    const cycleFromDate = new Date(cycleFrom + 'T00:00:00')
+
+    // Previous cycle: same bill_day one month back → one day before current start
+    const prevStartDate = new Date(cycleFromDate)
+    prevStartDate.setMonth(prevStartDate.getMonth() - 1)
+    const prevEndDate = new Date(cycleFromDate)
+    prevEndDate.setDate(prevEndDate.getDate() - 1)
+
+    return { card: c, cycleFrom, cycleTo, prevFrom: fmtD(prevStartDate), prevTo: fmtD(prevEndDate) }
+  })
+
+  // Fetch current + previous cycle spending for all cards in parallel
+  const spending = await Promise.all(
+    cycles.flatMap(({ card, cycleFrom, cycleTo, prevFrom, prevTo }) => [
+      fetchCycleSpending(card.id, cycleFrom, cycleTo),
+      fetchCycleSpending(card.id, prevFrom, prevTo),
+    ])
   )
 
   const result = {}
-  creditCards.forEach((card, i) => {
-    const cycleSpent = cycleAmounts[i] || 0
+  cycles.forEach(({ card, prevTo }, i) => {
+    const currentSpent = spending[i * 2]     || 0
+    const prevSpent    = spending[i * 2 + 1] || 0
+
+    // Payments made AFTER the previous cycle ended are settling that cycle's bill
+    const prevPayments = (payData || [])
+      .filter(p => p.card_id === card.id && p.date > prevTo)
+      .reduce((s, p) => s + p.amount, 0)
+
+    const prevUnpaid = Math.max(0, prevSpent - prevPayments)
+
     const instRem = (instData || [])
       .filter(inst => inst.card_id === card.id)
       .reduce((s, inst) => s + Math.max(inst.total_months - inst.paid_months, 0) * inst.monthly_amount, 0)
 
-    // Debt = current-cycle charges only. Card payments settle previous-cycle bills
-    // so they never reduce the current cycle's running balance.
-    result[card.id] = cycleSpent
-    result[`installment_${card.id}`] = instRem
+    result[card.id]                    = prevUnpaid + currentSpent
+    result[`prev_unpaid_${card.id}`]   = prevUnpaid
+    result[`current_${card.id}`]       = currentSpent
+    result[`installment_${card.id}`]   = instRem
   })
 
   result.total = creditCards.reduce((s, c) => s + (result[c.id] || 0), 0)

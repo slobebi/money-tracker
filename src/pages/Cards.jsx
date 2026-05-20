@@ -149,42 +149,87 @@ export default function Cards() {
 
       {/* Total debt summary */}
       {(() => {
-        const grandTotal = debt.total + debt.installmentTotal
+        const grandTotal        = debt.total + debt.installmentTotal
+        const currentCycleTotal = creditCards.reduce((s, c) =>
+          s + (debt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
+
         return (
-          <div className="card" style={{ marginBottom: 16, border: `1px solid ${grandTotal > 0 ? '#f25f5c33' : '#3ecf8e33'}`, background: grandTotal > 0 ? '#2e1a1a' : '#1a2e2a' }}>
-            <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total Outstanding Debt</div>
-            <div style={{ fontSize: 28, fontWeight: 800, color: grandTotal > 0 ? '#f25f5c' : '#3ecf8e', marginBottom: 2 }}>
-              {grandTotal > 0 ? fmt(grandTotal) : '✓ All clear'}
-            </div>
-            {debt.installmentTotal > 0 && (
-              <div style={{ fontSize: 12, color: '#f5a623', marginBottom: 10 }}>
-                incl. {fmt(debt.installmentTotal)} remaining installments
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+
+            {/* Left: Total Outstanding Debt */}
+            <div className="card" style={{ border: `1px solid ${grandTotal > 0 ? '#f25f5c33' : '#3ecf8e33'}`, background: grandTotal > 0 ? '#2e1a1a' : '#1a2e2a' }}>
+              <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Total Outstanding Debt</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: grandTotal > 0 ? '#f25f5c' : '#3ecf8e', marginBottom: 2 }}>
+                {grandTotal > 0 ? fmt(grandTotal) : '✓ All clear'}
               </div>
-            )}
-            {creditCards.length > 0 && (
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
-                {creditCards.map(c => {
-                  const cardInstRem = debt[`installment_${c.id}`] || 0
-                  const cardTotal   = (debt[c.id] || 0) + cardInstRem
-                  return (
-                    <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '8px 10px', textAlign: 'center', minWidth: 90 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: cardTotal > 0 ? '#f25f5c' : '#3ecf8e' }}>
-                        {cardTotal > 0 ? fmt(cardTotal) : '✓ Paid'}
-                      </div>
-                      {cardInstRem > 0 && (
-                        <div style={{ fontSize: 10, color: '#f5a623', marginTop: 1 }}>
-                          {fmt(cardInstRem)} cicilan
+              {debt.installmentTotal > 0 && (
+                <div style={{ fontSize: 11, color: '#f5a623', marginBottom: 8 }}>
+                  incl. {fmt(debt.installmentTotal)} installments
+                </div>
+              )}
+              {creditCards.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                  {creditCards.map(c => {
+                    const cardInstRem = debt[`installment_${c.id}`] || 0
+                    const cardTotal   = (debt[c.id] || 0) + cardInstRem
+                    return (
+                      <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '6px 8px', textAlign: 'center', minWidth: 80 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: cardTotal > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                          {cardTotal > 0 ? fmt(cardTotal) : '✓ Paid'}
                         </div>
-                      )}
-                      <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.name}</div>
-                    </div>
-                  )
-                })}
+                        {cardInstRem > 0 && (
+                          <div style={{ fontSize: 10, color: '#f5a623', marginTop: 1 }}>{fmt(cardInstRem)} cicilan</div>
+                        )}
+                        <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.name}</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              <div style={{ fontSize: 10, color: '#6b7080', marginTop: 8 }}>
+                prev unpaid + current cycle + all installments
               </div>
-            )}
-            <div style={{ fontSize: 11, color: '#6b7080', marginTop: 10 }}>
-              Debt = outstanding + tracked expenses − payments + remaining installments
             </div>
+
+            {/* Right: Current Cycle Due */}
+            <div className="card" style={{ border: `1px solid ${currentCycleTotal > 0 ? '#f5a62333' : '#3ecf8e33'}`, background: currentCycleTotal > 0 ? '#2a2210' : '#1a2e2a' }}>
+              <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 6 }}>Due This Cycle</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: currentCycleTotal > 0 ? '#f5a623' : '#3ecf8e', marginBottom: 2 }}>
+                {currentCycleTotal > 0 ? fmt(currentCycleTotal) : '✓ Nothing due'}
+              </div>
+              {(() => {
+                const totalPendingInst = creditCards.reduce((s, c) => s + (pendingInstByCard[c.id] || 0), 0)
+                return totalPendingInst > 0 && (
+                  <div style={{ fontSize: 11, color: '#9b94ff', marginBottom: 8 }}>
+                    incl. {fmt(totalPendingInst)} installments
+                  </div>
+                )
+              })()}
+              {creditCards.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                  {creditCards.map(c => {
+                    const cardCurrent = debt[`current_${c.id}`] || 0
+                    const cardPending = pendingInstByCard[c.id]  || 0
+                    const cardDue     = cardCurrent + cardPending
+                    return (
+                      <div key={c.id} style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: '6px 8px', textAlign: 'center', minWidth: 80 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: cardDue > 0 ? '#f5a623' : '#3ecf8e' }}>
+                          {cardDue > 0 ? fmt(cardDue) : '✓ Clear'}
+                        </div>
+                        {cardPending > 0 && (
+                          <div style={{ fontSize: 10, color: '#9b94ff', marginTop: 1 }}>{fmt(cardPending)} cicilan</div>
+                        )}
+                        <div style={{ fontSize: 10, color: c.color, marginTop: 2, fontWeight: 600 }}>{c.name}</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              <div style={{ fontSize: 10, color: '#6b7080', marginTop: 8 }}>
+                current cycle charges + installment due this month
+              </div>
+            </div>
+
           </div>
         )
       })()}
@@ -197,15 +242,16 @@ export default function Cards() {
 
       {creditCards.map(c => {
         const totalLimit   = c.credit_limit || 0
-        const thisCycle    = cycling[c.id]  || 0
+        const thisCycle    = cycling[c.id]              || 0
+        const prevUnpaid   = debt[`prev_unpaid_${c.id}`] || 0
         const pendingInst  = pendingInstByCard[c.id]     || 0
         const instRem      = debt[`installment_${c.id}`] || 0
         const futureInst   = Math.max(instRem - pendingInst, 0)
 
-        // Projected bill = current cycle charges + installment due this month
-        const projected      = thisCycle + pendingInst
-        // Total committed = current cycle + all remaining installments
-        const totalCommitted = thisCycle + instRem
+        // Projected bill = previous unpaid + current cycle + installment due this month
+        const projected      = prevUnpaid + thisCycle + pendingInst
+        // Total committed = all of the above + future installments
+        const totalCommitted = prevUnpaid + thisCycle + instRem
         const available    = totalLimit - totalCommitted
         const utilPct      = totalLimit > 0 ? Math.min((totalCommitted / totalLimit) * 100, 100) : 0
         const utilColor    = utilPct >= 90 ? '#f25f5c' : utilPct >= 70 ? '#f5a623' : '#3ecf8e'
@@ -270,6 +316,12 @@ export default function Cards() {
                   ))}
                 </div>
                 <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #2a2d3a', fontSize: 12, color: '#6b7080', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {prevUnpaid > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: '#f25f5c' }}>Previous cycle unpaid</span>
+                      <span style={{ color: '#f25f5c', fontWeight: 600 }}>{fmt(prevUnpaid)}</span>
+                    </div>
+                  )}
                   <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                     <span>This cycle {c.bill_day ? `(${from.slice(5)} → ${to.slice(5)})` : ''}</span>
                     <span style={{ color: '#e2e4ef', fontWeight: 500 }}>{fmt(thisCycle)}</span>
@@ -287,10 +339,15 @@ export default function Cards() {
                     </div>
                   )}
                   <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 4, borderTop: '1px solid #2a2d3a', marginTop: 2 }}>
-                    <span>Current cycle debt</span>
-                    <span style={{ fontWeight: 600, color: debt[c.id] > 0 ? '#f25f5c' : '#3ecf8e' }}>
-                      {debt[c.id] > 0 ? fmt(debt[c.id]) : '✓ Cleared'}
-                    </span>
+                    <span>Total debt</span>
+                    {(() => {
+                      const total = debt[c.id] + instRem
+                      return (
+                        <span style={{ fontWeight: 600, color: total > 0 ? '#f25f5c' : '#3ecf8e' }}>
+                          {total > 0 ? fmt(total) : '✓ Cleared'}
+                        </span>
+                      )
+                    })()}
                   </div>
                 </div>
               </div>

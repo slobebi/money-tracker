@@ -56,7 +56,7 @@ export default function Layout() {
 
       {/* Content — fills remaining height and scrolls */}
       <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch' }}>
-        <main className="pb-24 sm:pb-6" style={{ maxWidth: 860, margin: '0 auto', padding: '16px 12px' }}>
+        <main className="pb-24 sm:pb-6" style={{ maxWidth: 860, margin: '0 auto', paddingTop: 16, paddingLeft: 12, paddingRight: 12 }}>
           <Outlet />
         </main>
       </div>
