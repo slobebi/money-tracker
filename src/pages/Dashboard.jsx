@@ -113,9 +113,11 @@ export default function Dashboard() {
   })
   const dueThisCycle = creditCards.reduce((s, c) =>
     s + (data.cardDebt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
+  const dueSalaryPeriod = creditCards.reduce((s, c) =>
+    s + (data.cardDebt[c.id] || 0) + (pendingInstByCard[c.id] || 0), 0)
 
   const unpaidRecurring = data.totalUnpaidRecurring
-  const expectedSavings = salary + debitIncome - debitExpenses - dueThisCycle - unpaidRecurring
+  const expectedSavings = salary + debitIncome - debitExpenses - dueSalaryPeriod - unpaidRecurring
 
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
 
@@ -167,10 +169,10 @@ export default function Dashboard() {
               <span>− Debit expenses</span>
               <span style={{ color: '#f25f5c' }}>−{fmt(debitExpenses)}</span>
             </div>
-            {dueThisCycle > 0 && (
+            {dueSalaryPeriod > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>− Due this cycle</span>
-                <span style={{ color: '#f5a623' }}>−{fmt(dueThisCycle)}</span>
+                <span>− Card bills</span>
+                <span style={{ color: '#f5a623' }}>−{fmt(dueSalaryPeriod)}</span>
               </div>
             )}
             {unpaidRecurring > 0 && (

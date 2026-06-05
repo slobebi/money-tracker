@@ -101,13 +101,15 @@ export default function Accounts() {
 
   const dueThisCycle = creditCards.reduce((s, c) =>
     s + (cardDebt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
+  const dueSalaryPeriod = creditCards.reduce((s, c) =>
+    s + (cardDebt[c.id] || 0) + (pendingInstByCard[c.id] || 0), 0)
 
   const confirmedIds = new Set(confirmations.map(c => c.recurring_id))
   const unpaidRecurring = recurring
     .filter(r => r.active && !confirmedIds.has(r.id))
     .reduce((s, r) => s + r.amount, 0)
 
-  const expectedSavings = salary + debitIncome - debitExpenses - dueThisCycle - unpaidRecurring
+  const expectedSavings = salary + debitIncome - debitExpenses - dueSalaryPeriod - unpaidRecurring
 
   // ── Debit card modal ──────────────────────────────────────────────────────────
   function openAddDebit() {
@@ -391,10 +393,10 @@ export default function Accounts() {
               <span>− Debit expenses</span>
               <span style={{ color: '#f25f5c' }}>−{fmt(debitExpenses)}</span>
             </div>
-            {dueThisCycle > 0 && (
+            {dueSalaryPeriod > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>− Due this cycle</span>
-                <span style={{ color: '#f5a623' }}>−{fmt(dueThisCycle)}</span>
+                <span>− Card bills</span>
+                <span style={{ color: '#f5a623' }}>−{fmt(dueSalaryPeriod)}</span>
               </div>
             )}
             {unpaidRecurring > 0 && (
