@@ -5,6 +5,7 @@ import AddTransaction from './pages/AddTransaction'
 import Transactions from './pages/Transactions'
 import Monthly from './pages/Monthly'
 import Cards from './pages/Cards'
+import Confirm from './pages/Confirm'
 import Accounts from './pages/Accounts'
 
 export default function App() {
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="transactions" element={<Transactions />} />
         <Route path="monthly"      element={<Monthly />} />
         <Route path="cards"        element={<Cards />} />
+        <Route path="confirm"      element={<Confirm />} />
         <Route path="accounts"     element={<Accounts />} />
       </Route>
     </Routes>

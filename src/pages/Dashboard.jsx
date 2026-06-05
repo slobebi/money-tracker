@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { App } from 'antd'
-import { RightOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
-import dayjs from 'dayjs'
+import { RightOutlined } from '@ant-design/icons'
 import {
   fetchDebitSettings, fetchTotalIncome, fetchBCADirectExpenses,
   fetchCardPayments, fetchMonthTransactions,
   fetchCycleSpending, fetchBudgets, fetchRecurring,
   fetchMonthConfirmations, fetchRecentTransactions,
-  addTransaction, confirmRecurring, skipRecurring, fetchCardDebt,
-  fetchInstallments, confirmInstallmentPayment,
+  fetchCardDebt, fetchInstallments,
 } from '../lib/supabase'
 import { fmt, fmtDate, currentBillingCycle } from '../lib/utils'
 import Badge from '../components/Badge'
@@ -30,8 +28,6 @@ export default function Dashboard() {
     cardDebt: { total: 0, installmentTotal: 0, _creditCardIds: [] },
     pendingInstallments: [],
   })
-  const [confirmingInst, setConfirmingInst] = useState(null)
-  const [confirming, setConfirming]         = useState(null)
 
   useEffect(() => {
     if (creditCards.length === 0) return
@@ -102,51 +98,21 @@ export default function Dashboard() {
     cat, budget, spent: byCat[cat] || 0,
   })).sort((a, b) => (b.spent / b.budget) - (a.spent / a.budget))
 
-  async function handleConfirm(rec) {
-    setConfirming(rec.id)
-    try {
-      const tx = await addTransaction({
-        date: dayjs().format('YYYY-MM-DD'), amount: rec.amount,
-        type: rec.type, method: rec.method, category: rec.category, note: rec.note || rec.name,
-      })
-      await confirmRecurring(rec.id, monthStr, tx.id)
-      setData(prev => ({ ...prev, pending: prev.pending.filter(r => r.id !== rec.id) }))
-      message.success(`"${rec.name}" added to transactions`)
-    } catch (e) {
-      message.error(e.message)
-    } finally {
-      setConfirming(null)
-    }
-  }
+  // ── Derived values for savings ─────────────────────────────────────────────────
+  const debitIds = new Set(debitCards.map(c => c.id))
+  const debitIncome  = data.monthTxs.filter(t => debitIds.has(t.method) && t.type === 'income').reduce((s, t) => s + t.amount, 0)
+  const debitExpenses = data.monthTxs.filter(t => debitIds.has(t.method) && t.type === 'expense').reduce((s, t) => s + t.amount, 0)
 
-  async function handleSkip(rec) {
-    setConfirming(rec.id)
-    try {
-      await skipRecurring(rec.id, monthStr)
-      setData(prev => ({ ...prev, pending: prev.pending.filter(r => r.id !== rec.id) }))
-      message.info(`"${rec.name}" skipped for this month`)
-    } catch (e) {
-      message.error(e.message)
-    } finally {
-      setConfirming(null)
-    }
-  }
+  // Due this cycle = sum of current cycle charges + pending installments
+  const pendingInstByCard = {}
+  data.pendingInstallments.forEach(inst => {
+    pendingInstByCard[inst.card_id] = (pendingInstByCard[inst.card_id] || 0) + inst.monthly_amount
+  })
+  const dueThisCycle = creditCards.reduce((s, c) =>
+    s + (data.cardDebt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
 
-  async function handleConfirmInstallment(inst) {
-    setConfirmingInst(inst.id)
-    try {
-      const { newPaid } = await confirmInstallmentPayment(inst.id, {
-        date: dayjs().format('YYYY-MM-DD'), amount: inst.monthly_amount,
-        type: 'expense', method: inst.card_id, category: inst.category, note: inst.note || inst.description,
-      })
-      setData(prev => ({ ...prev, pendingInstallments: prev.pendingInstallments.filter(i => i.id !== inst.id) }))
-      message.success(newPaid >= inst.total_months ? `"${inst.description}" fully paid off!` : `Month ${newPaid}/${inst.total_months} logged`)
-    } catch (e) {
-      message.error(e.message)
-    } finally {
-      setConfirmingInst(null)
-    }
-  }
+  const unpaidRecurring = data.pending.reduce((s, r) => s + r.amount, 0)
+  const expectedSavings = salary + debitIncome - debitExpenses - dueThisCycle - unpaidRecurring
 
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
 
@@ -181,6 +147,38 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* Expected Savings */}
+      {salary > 0 && (
+        <div className="card" style={{ background: expectedSavings >= 0 ? '#1a2e2a' : '#2e1a1a', border: `1px solid ${expectedSavings >= 0 ? '#3ecf8e33' : '#f25f5c33'}` }}>
+          <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Expected Savings</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: expectedSavings >= 0 ? '#3ecf8e' : '#f25f5c', lineHeight: 1.1 }}>
+            {expectedSavings < 0 ? '-' : ''}{fmt(expectedSavings)}
+          </div>
+          <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #2a2d3a', fontSize: 11, color: '#6b7080', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Salary + debit income</span>
+              <span style={{ color: '#3ecf8e' }}>{fmt(salary + debitIncome)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>− Debit expenses</span>
+              <span style={{ color: '#f25f5c' }}>−{fmt(debitExpenses)}</span>
+            </div>
+            {dueThisCycle > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>− Due this cycle</span>
+                <span style={{ color: '#f5a623' }}>−{fmt(dueThisCycle)}</span>
+              </div>
+            )}
+            {unpaidRecurring > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>− Unpaid recurring</span>
+                <span style={{ color: '#f5a623' }}>−{fmt(unpaidRecurring)}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Total Bill This Cycle */}
       {creditCards.length > 0 && (() => {
@@ -292,36 +290,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Pending Installments */}
-      {data.pendingInstallments.length > 0 && (
-        <div className="card" style={{ border: '1px solid #6c63ff44' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <span style={{ fontSize: 16 }}>💳</span>
-            <span style={{ fontSize: 13, fontWeight: 600, color: '#9b94ff' }}>
-              {data.pendingInstallments.length} installment{data.pendingInstallments.length > 1 ? 's' : ''} due this month
-            </span>
-          </div>
-          {data.pendingInstallments.map(inst => (
-            <div key={inst.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #2a2d3a' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{inst.description}</div>
-                <div style={{ fontSize: 12, color: '#6b7080' }}>
-                  <Badge method={inst.card_id} /> · {inst.paid_months + 1}/{inst.total_months} · {inst.category}
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
-                <span style={{ fontSize: 14, fontWeight: 700, color: '#f25f5c' }}>{fmt(inst.monthly_amount)}</span>
-                <button onClick={() => handleConfirmInstallment(inst)} disabled={confirmingInst === inst.id}
-                  style={{ background: '#3ecf8e22', border: 'none', borderRadius: 6, padding: '5px 8px', color: '#3ecf8e', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
-                  title="Mark as paid">
-                  <CheckCircleOutlined />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* This month stats */}
       <div className="grid grid-cols-2 gap-3">
         <div className="card">
@@ -356,41 +324,6 @@ export default function Dashboard() {
           )}
         </div>
       </div>
-
-      {/* Pending Recurring */}
-      {data.pending.length > 0 && (
-        <div className="card" style={{ border: '1px solid #f5a62344' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-            <ClockCircleOutlined style={{ color: '#f5a623' }} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: '#f5a623' }}>
-              {data.pending.length} recurring transaction{data.pending.length > 1 ? 's' : ''} pending
-            </span>
-          </div>
-          {data.pending.map(rec => (
-            <div key={rec.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #2a2d3a' }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{rec.name}</div>
-                <div style={{ fontSize: 12, color: '#6b7080' }}>
-                  <Badge method={rec.method} /> · {rec.category}
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8 }}>
-                <span style={{ fontSize: 14, fontWeight: 700, color: '#f25f5c' }}>{fmt(rec.amount)}</span>
-                <button onClick={() => handleConfirm(rec)} disabled={confirming === rec.id}
-                  style={{ background: '#3ecf8e22', border: 'none', borderRadius: 6, padding: '5px 8px', color: '#3ecf8e', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
-                  title="Confirm">
-                  <CheckCircleOutlined />
-                </button>
-                <button onClick={() => handleSkip(rec)} disabled={confirming === rec.id}
-                  style={{ background: '#f25f5c22', border: 'none', borderRadius: 6, padding: '5px 8px', color: '#f25f5c', cursor: 'pointer', fontSize: 18, lineHeight: 1 }}
-                  title="Skip this month">
-                  <CloseCircleOutlined />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
 
       {/* Card Utilization */}
       {creditCards.length > 0 && (

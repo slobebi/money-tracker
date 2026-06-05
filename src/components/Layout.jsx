@@ -6,6 +6,7 @@ import {
   BarChartOutlined,
   CreditCardOutlined,
   WalletOutlined,
+  CheckSquareOutlined,
 } from '@ant-design/icons'
 
 const links = [
@@ -14,6 +15,7 @@ const links = [
   { to: '/transactions', label: 'History',  icon: <UnorderedListOutlined /> },
   { to: '/monthly',      label: 'Monthly',  icon: <BarChartOutlined /> },
   { to: '/cards',        label: 'Cards',    icon: <CreditCardOutlined /> },
+  { to: '/confirm',      label: 'Confirm',   icon: <CheckSquareOutlined /> },
   { to: '/accounts',     label: 'Accounts', icon: <WalletOutlined /> },
 ]
 

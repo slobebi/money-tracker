@@ -5,10 +5,10 @@ import dayjs from 'dayjs'
 import {
   addCard, updateCard, deleteCard,
   fetchCardPayments, addCardPayment, deleteCardPayment,
-  fetchTotalIncome, fetchDebitExpenses,
-  fetchRecurring, addRecurring, updateRecurring, deleteRecurring,
+  fetchTotalIncome, fetchDebitExpenses, fetchMonthTransactions,
+  fetchRecurring, fetchMonthConfirmations, addRecurring, updateRecurring, deleteRecurring,
   fetchInstallments, addInstallment, updateInstallment, deleteInstallment,
-  fetchCategories,
+  fetchCategories, fetchCardDebt,
 } from '../lib/supabase'
 import { fmt, fmtDate } from '../lib/utils'
 import Badge from '../components/Badge'
@@ -26,6 +26,9 @@ export default function Accounts() {
   const [recurring, setRecurring]       = useState([])
   const [installments, setInstallments] = useState([])
   const [categories, setCategories]     = useState([])
+  const [monthTxs, setMonthTxs]         = useState([])
+  const [cardDebt, setCardDebt]         = useState({})
+  const [confirmations, setConfirmations] = useState([])
   const [loading, setLoading]           = useState(true)
 
   // debit card add/edit modal
@@ -49,12 +52,18 @@ export default function Accounts() {
   async function load() {
     setLoading(true)
     try {
-      const [inc, exp, pays, recs, insts, cats] = await Promise.all([
+      const now = new Date()
+      const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      const [inc, exp, pays, recs, insts, cats, mTxs, debt, confs] = await Promise.all([
         fetchTotalIncome(), fetchDebitExpenses(),
         fetchCardPayments(), fetchRecurring(), fetchInstallments(), fetchCategories(),
+        fetchMonthTransactions(now.getFullYear(), now.getMonth()),
+        fetchCardDebt(),
+        fetchMonthConfirmations(monthStr),
       ])
       setTotalIncome(inc); setDirectExp(exp)
       setPayments(pays); setRecurring(recs); setInstallments(insts); setCategories(cats)
+      setMonthTxs(mTxs); setCardDebt(debt); setConfirmations(confs)
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -68,6 +77,37 @@ export default function Accounts() {
   function debitBalance(card) {
     return (card.current_balance || 0) + totalIncome - directExp - totalCardPay
   }
+
+  // ── Expected savings ───────────────────────────────────────────────────────────
+  const now = new Date()
+  const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+
+  const debitIds = new Set(debitCards.map(c => c.id))
+  const debitIncome  = monthTxs.filter(t => debitIds.has(t.method) && t.type === 'income').reduce((s, t) => s + t.amount, 0)
+  const debitExpenses = monthTxs.filter(t => debitIds.has(t.method) && t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+  const salary = debitCards.reduce((s, c) => s + (c.monthly_salary || 0), 0)
+
+  // Pending installments per card
+  const pendingInstByCard = {}
+  installments.filter(inst => {
+    if (inst.paid_months >= inst.total_months) return false
+    const [y, m] = inst.start_year_month.split('-').map(Number)
+    const d = new Date(y, m - 1 + inst.paid_months, 1)
+    const nextDue = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    return nextDue <= monthStr
+  }).forEach(inst => {
+    pendingInstByCard[inst.card_id] = (pendingInstByCard[inst.card_id] || 0) + inst.monthly_amount
+  })
+
+  const dueThisCycle = creditCards.reduce((s, c) =>
+    s + (cardDebt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
+
+  const confirmedIds = new Set(confirmations.map(c => c.recurring_id))
+  const unpaidRecurring = recurring
+    .filter(r => r.active && r.day_of_month <= now.getDate() && !confirmedIds.has(r.id))
+    .reduce((s, r) => s + r.amount, 0)
+
+  const expectedSavings = salary + debitIncome - debitExpenses - dueThisCycle - unpaidRecurring
 
   // ── Debit card modal ──────────────────────────────────────────────────────────
   function openAddDebit() {
@@ -333,6 +373,38 @@ export default function Accounts() {
             </div>
           )
         })
+      )}
+
+      {/* Expected Savings */}
+      {salary > 0 && (
+        <div className="card" style={{ marginBottom: 16, background: expectedSavings >= 0 ? '#1a2e2a' : '#2e1a1a', border: `1px solid ${expectedSavings >= 0 ? '#3ecf8e33' : '#f25f5c33'}` }}>
+          <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Expected Savings</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: expectedSavings >= 0 ? '#3ecf8e' : '#f25f5c', lineHeight: 1.1 }}>
+            {expectedSavings < 0 ? '-' : ''}{fmt(expectedSavings)}
+          </div>
+          <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #2a2d3a', fontSize: 11, color: '#6b7080', display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Salary + debit income</span>
+              <span style={{ color: '#3ecf8e' }}>{fmt(salary + debitIncome)}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>− Debit expenses</span>
+              <span style={{ color: '#f25f5c' }}>−{fmt(debitExpenses)}</span>
+            </div>
+            {dueThisCycle > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>− Due this cycle</span>
+                <span style={{ color: '#f5a623' }}>−{fmt(dueThisCycle)}</span>
+              </div>
+            )}
+            {unpaidRecurring > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <span>− Unpaid recurring</span>
+                <span style={{ color: '#f5a623' }}>−{fmt(unpaidRecurring)}</span>
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {/* Card Payments */}
