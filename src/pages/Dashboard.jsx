@@ -26,7 +26,7 @@ export default function Dashboard() {
     monthTxs: [], cycleSpending: {}, budgets: {},
     pending: [], recentTxs: [],
     cardDebt: { total: 0, installmentTotal: 0, _creditCardIds: [] },
-    pendingInstallments: [],
+    pendingInstallments: [], totalUnpaidRecurring: 0,
   })
 
   useEffect(() => {
@@ -66,6 +66,9 @@ export default function Dashboard() {
       const pending = recurring.filter(r =>
         r.active && r.day_of_month <= now.getDate() && !confirmedIds.has(r.id)
       )
+      const totalUnpaidRecurring = recurring
+        .filter(r => r.active && !confirmedIds.has(r.id))
+        .reduce((s, r) => s + r.amount, 0)
 
       const pendingInstallments = installments.filter(inst => {
         if (inst.paid_months >= inst.total_months) return false
@@ -75,7 +78,7 @@ export default function Dashboard() {
         return nextDue <= monthStr
       })
 
-      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cycleSpending, budgets, pending, recentTxs, cardDebt, pendingInstallments })
+      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cycleSpending, budgets, pending, recentTxs, cardDebt, pendingInstallments, totalUnpaidRecurring })
     } catch (e) {
       message.error(e.message)
     } finally {
@@ -111,7 +114,7 @@ export default function Dashboard() {
   const dueThisCycle = creditCards.reduce((s, c) =>
     s + (data.cardDebt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
 
-  const unpaidRecurring = data.pending.reduce((s, r) => s + r.amount, 0)
+  const unpaidRecurring = data.totalUnpaidRecurring
   const expectedSavings = salary + debitIncome - debitExpenses - dueThisCycle - unpaidRecurring
 
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'

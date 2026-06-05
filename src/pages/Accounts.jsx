@@ -104,7 +104,7 @@ export default function Accounts() {
 
   const confirmedIds = new Set(confirmations.map(c => c.recurring_id))
   const unpaidRecurring = recurring
-    .filter(r => r.active && r.day_of_month <= now.getDate() && !confirmedIds.has(r.id))
+    .filter(r => r.active && !confirmedIds.has(r.id))
     .reduce((s, r) => s + r.amount, 0)
 
   const expectedSavings = salary + debitIncome - debitExpenses - dueThisCycle - unpaidRecurring
