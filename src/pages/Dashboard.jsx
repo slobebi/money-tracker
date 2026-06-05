@@ -113,8 +113,11 @@ export default function Dashboard() {
   })
   const dueThisCycle = creditCards.reduce((s, c) =>
     s + (data.cardDebt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
-  const dueSalaryPeriod = creditCards.reduce((s, c) =>
-    s + (data.cardDebt[c.id] || 0) + (pendingInstByCard[c.id] || 0), 0)
+  const dueSalaryPeriod = creditCards.reduce((s, c) => {
+    const prevUnpaid = data.cardDebt[`prev_unpaid_${c.id}`] || 0
+    const current    = data.cardDebt[`current_${c.id}`]     || 0
+    return s + (prevUnpaid > 0 ? prevUnpaid : current) + (pendingInstByCard[c.id] || 0)
+  }, 0)
 
   const unpaidRecurring = data.totalUnpaidRecurring
   const expectedSavings = salary + debitIncome - debitExpenses - dueSalaryPeriod - unpaidRecurring

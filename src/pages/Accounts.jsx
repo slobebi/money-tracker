@@ -101,8 +101,11 @@ export default function Accounts() {
 
   const dueThisCycle = creditCards.reduce((s, c) =>
     s + (cardDebt[`current_${c.id}`] || 0) + (pendingInstByCard[c.id] || 0), 0)
-  const dueSalaryPeriod = creditCards.reduce((s, c) =>
-    s + (cardDebt[c.id] || 0) + (pendingInstByCard[c.id] || 0), 0)
+  const dueSalaryPeriod = creditCards.reduce((s, c) => {
+    const prevUnpaid = cardDebt[`prev_unpaid_${c.id}`] || 0
+    const current    = cardDebt[`current_${c.id}`]     || 0
+    return s + (prevUnpaid > 0 ? prevUnpaid : current) + (pendingInstByCard[c.id] || 0)
+  }, 0)
 
   const confirmedIds = new Set(confirmations.map(c => c.recurring_id))
   const unpaidRecurring = recurring
