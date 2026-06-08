@@ -437,3 +437,78 @@ export async function fetchCardDebt() {
 
   return result
 }
+
+// ─── Salary periods ────────────────────────────────────────────────────────────
+
+export async function fetchSalaryPeriods() {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('date,amount')
+    .eq('type', 'income')
+    .eq('category', 'Salary')
+    .order('date', { ascending: true })
+  if (error) throw error
+  const rows = data || []
+  const today = new Date().toISOString().slice(0, 10)
+
+  // Build periods: each salary date starts a period, ends day before next salary (or today for current)
+  return rows.map((row, i) => {
+    const start = row.date
+    const end   = i + 1 < rows.length
+      ? offsetDate(rows[i + 1].date, -1)
+      : today
+    return { start, end, salary: row.amount, isCurrent: i === rows.length - 1 }
+  })
+}
+
+function offsetDate(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00')
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+// Given a salary period and the list of active cards, compute all savings components.
+export async function fetchSalaryPeriodSavings(periodStart, periodEnd, creditCards, installments) {
+  const pad = n => String(n).padStart(2, '0')
+
+  // Transactions in the salary period (Transfer already excluded by fetchTransactionsByRange)
+  const txs = await fetchTransactionsByRange(periodStart, periodEnd)
+
+  // Card cycle spending: for each credit card find the cycle whose bill falls within this period
+  const cardCycleSpending = {}
+  await Promise.all(creditCards.map(async c => {
+    const { from, to } = billingCycleForSalaryPeriod(c.bill_day || 1, periodStart)
+    cardCycleSpending[c.id] = await fetchCycleSpending(c.id, from, to)
+  }))
+
+  // Installments due during the salary period month
+  const periodMonth = periodStart.slice(0, 7)
+  const instDue = installments
+    .filter(inst => {
+      if (inst.paid_months >= inst.total_months) return false
+      const [y, m] = inst.start_year_month.split('-').map(Number)
+      const d = new Date(y, m - 1 + inst.paid_months, 1)
+      const nextDue = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`
+      return nextDue <= periodMonth
+    })
+    .reduce((s, inst) => s + inst.monthly_amount, 0)
+
+  return { txs, cardCycleSpending, instDue }
+}
+
+// The billing cycle whose bill is generated (and paid) after a given salary date
+function billingCycleForSalaryPeriod(billDay, salaryDate) {
+  const s = new Date(salaryDate + 'T00:00:00')
+  const pad = n => String(n).padStart(2, '0')
+  const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+
+  // Find the first bill_day strictly after salaryDate
+  let candidate = new Date(s.getFullYear(), s.getMonth(), billDay)
+  if (candidate <= s) {
+    candidate = new Date(s.getFullYear(), s.getMonth() + 1, billDay)
+  }
+  // Cycle ends the day before bill generation; starts bill_day of the month before that
+  const cycleEnd   = new Date(candidate); cycleEnd.setDate(cycleEnd.getDate() - 1)
+  const cycleStart = new Date(candidate.getFullYear(), candidate.getMonth() - 1, billDay)
+  return { from: fmt(cycleStart), to: fmt(cycleEnd) }
+}

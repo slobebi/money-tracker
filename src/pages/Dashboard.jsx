@@ -8,6 +8,7 @@ import {
   fetchCycleSpending, fetchBudgets, fetchRecurring,
   fetchMonthConfirmations, fetchRecentTransactions,
   fetchCardDebt, fetchInstallments,
+  fetchSalaryPeriods, fetchSalaryPeriodSavings,
 } from '../lib/supabase'
 import { fmt, fmtDate, currentBillingCycle } from '../lib/utils'
 import Badge from '../components/Badge'
@@ -26,8 +27,13 @@ export default function Dashboard() {
     monthTxs: [], cycleSpending: {}, budgets: {},
     pending: [], recentTxs: [],
     cardDebt: { total: 0, installmentTotal: 0, _creditCardIds: [] },
-    pendingInstallments: [], totalUnpaidRecurring: 0,
+    pendingInstallments: [], totalUnpaidRecurring: 0, installments: [],
   })
+
+  const [salaryPeriods, setSalaryPeriods]       = useState([])
+  const [periodIdx, setPeriodIdx]               = useState(null) // null = current
+  const [periodData, setPeriodData]             = useState(null) // null = use main data
+  const [periodLoading, setPeriodLoading]       = useState(false)
 
   useEffect(() => {
     if (creditCards.length === 0) return
@@ -78,11 +84,34 @@ export default function Dashboard() {
         return nextDue <= monthStr
       })
 
-      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cycleSpending, budgets, pending, recentTxs, cardDebt, pendingInstallments, totalUnpaidRecurring })
+      setData({ settings, totalIncome, bcaExpenses, cardPayments, monthTxs, cycleSpending, budgets, pending, recentTxs, cardDebt, pendingInstallments, totalUnpaidRecurring, installments })
+
+      const periods = await fetchSalaryPeriods()
+      setSalaryPeriods(periods)
+      const newIdx = periods.length - 1
+      setPeriodIdx(newIdx)
+      // pre-load nothing: current period uses main data
     } catch (e) {
       message.error(e.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadPeriod(idx) {
+    const period = salaryPeriods[idx]
+    if (!period) return
+    if (idx === salaryPeriods.length - 1) { setPeriodData(null); return }
+    setPeriodLoading(true)
+    try {
+      const { txs, cardCycleSpending, instDue } = await fetchSalaryPeriodSavings(
+        period.start, period.end, creditCards, data.installments
+      )
+      setPeriodData({ txs, cardCycleSpending, instDue, period })
+    } catch (e) {
+      message.error(e.message)
+    } finally {
+      setPeriodLoading(false)
     }
   }
 
@@ -106,7 +135,7 @@ export default function Dashboard() {
   const debitIncome  = data.monthTxs.filter(t => debitIds.has(t.method) && t.type === 'income').reduce((s, t) => s + t.amount, 0)
   const debitExpenses = data.monthTxs.filter(t => debitIds.has(t.method) && t.type === 'expense').reduce((s, t) => s + t.amount, 0)
 
-  // Due this cycle = sum of current cycle charges + pending installments
+  // Due this cycle = sum of current cycle charges + pending installments (for Cards widget)
   const pendingInstByCard = {}
   data.pendingInstallments.forEach(inst => {
     pendingInstByCard[inst.card_id] = (pendingInstByCard[inst.card_id] || 0) + inst.monthly_amount
@@ -121,6 +150,24 @@ export default function Dashboard() {
 
   const unpaidRecurring = data.totalUnpaidRecurring
   const expectedSavings = salary + debitIncome - debitExpenses - dueSalaryPeriod - unpaidRecurring
+
+  // ── Historical period savings ──────────────────────────────────────────────────
+  const activePeriod   = periodIdx !== null ? salaryPeriods[periodIdx] : null
+  const isCurrentPeriod = !activePeriod || activePeriod.isCurrent
+  const fmtPeriodDate  = d => new Date(d + 'T00:00:00').toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
+
+  let viewSalary = salary, viewDebitIncome = debitIncome, viewDebitExpenses = debitExpenses
+  let viewCardBills = dueSalaryPeriod, viewUnpaidRecurring = unpaidRecurring
+
+  if (!isCurrentPeriod && periodData) {
+    const pTxs = periodData.txs
+    viewSalary        = activePeriod.salary
+    viewDebitIncome   = pTxs.filter(t => debitIds.has(t.method) && t.type === 'income').reduce((s, t) => s + t.amount, 0)
+    viewDebitExpenses = pTxs.filter(t => debitIds.has(t.method) && t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+    viewCardBills     = creditCards.reduce((s, c) => s + (periodData.cardCycleSpending[c.id] || 0), 0) + periodData.instDue
+    viewUnpaidRecurring = 0 // past periods: recurring already acted on
+  }
+  const viewSavings = viewSalary + viewDebitIncome - viewDebitExpenses - viewCardBills - viewUnpaidRecurring
 
   const greeting = now.getHours() < 12 ? 'Good morning' : now.getHours() < 18 ? 'Good afternoon' : 'Good evening'
 
@@ -158,33 +205,62 @@ export default function Dashboard() {
 
       {/* Expected Savings */}
       {salary > 0 && (
-        <div className="card" style={{ background: expectedSavings >= 0 ? '#1a2e2a' : '#2e1a1a', border: `1px solid ${expectedSavings >= 0 ? '#3ecf8e33' : '#f25f5c33'}` }}>
-          <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: 4 }}>Expected Savings</div>
-          <div style={{ fontSize: 28, fontWeight: 800, color: expectedSavings >= 0 ? '#3ecf8e' : '#f25f5c', lineHeight: 1.1 }}>
-            {expectedSavings < 0 ? '-' : ''}{fmt(expectedSavings)}
-          </div>
-          <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #2a2d3a', fontSize: 11, color: '#6b7080', display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>Salary + debit income</span>
-              <span style={{ color: '#3ecf8e' }}>{fmt(salary + debitIncome)}</span>
+        <div className="card" style={{ background: viewSavings >= 0 ? '#1a2e2a' : '#2e1a1a', border: `1px solid ${viewSavings >= 0 ? '#3ecf8e33' : '#f25f5c33'}` }}>
+          {/* Header row with period navigation */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+            <div style={{ fontSize: 11, color: '#6b7080', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              {isCurrentPeriod ? 'Expected Savings' : 'Actual Savings'}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-              <span>− Debit expenses</span>
-              <span style={{ color: '#f25f5c' }}>−{fmt(debitExpenses)}</span>
-            </div>
-            {dueSalaryPeriod > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>− Card bills</span>
-                <span style={{ color: '#f5a623' }}>−{fmt(dueSalaryPeriod)}</span>
-              </div>
-            )}
-            {unpaidRecurring > 0 && (
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span>− Unpaid recurring</span>
-                <span style={{ color: '#f5a623' }}>−{fmt(unpaidRecurring)}</span>
+            {salaryPeriods.length > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                <button
+                  onClick={() => { const i = (periodIdx ?? salaryPeriods.length - 1) - 1; if (i >= 0) { setPeriodIdx(i); loadPeriod(i) } }}
+                  disabled={periodIdx === 0}
+                  style={{ background: 'none', border: 'none', color: periodIdx === 0 ? '#3a3d4a' : '#6b7080', cursor: periodIdx === 0 ? 'default' : 'pointer', fontSize: 14, padding: '0 4px', lineHeight: 1 }}
+                >‹</button>
+                <span style={{ fontSize: 10, color: '#6b7080', minWidth: 90, textAlign: 'center' }}>
+                  {activePeriod ? `${fmtPeriodDate(activePeriod.start)} – ${fmtPeriodDate(activePeriod.end)}` : '—'}
+                </span>
+                <button
+                  onClick={() => { const i = (periodIdx ?? salaryPeriods.length - 1) + 1; if (i < salaryPeriods.length) { setPeriodIdx(i); loadPeriod(i) } }}
+                  disabled={isCurrentPeriod}
+                  style={{ background: 'none', border: 'none', color: isCurrentPeriod ? '#3a3d4a' : '#6b7080', cursor: isCurrentPeriod ? 'default' : 'pointer', fontSize: 14, padding: '0 4px', lineHeight: 1 }}
+                >›</button>
               </div>
             )}
           </div>
+
+          {periodLoading ? (
+            <div style={{ fontSize: 14, color: '#6b7080', padding: '12px 0' }}>Loading...</div>
+          ) : (
+            <>
+              <div style={{ fontSize: 28, fontWeight: 800, color: viewSavings >= 0 ? '#3ecf8e' : '#f25f5c', lineHeight: 1.1 }}>
+                {viewSavings < 0 ? '-' : ''}{fmt(viewSavings)}
+              </div>
+              <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid #2a2d3a', fontSize: 11, color: '#6b7080', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Salary + debit income</span>
+                  <span style={{ color: '#3ecf8e' }}>{fmt(viewSalary + viewDebitIncome)}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span>− Debit expenses</span>
+                  <span style={{ color: '#f25f5c' }}>−{fmt(viewDebitExpenses)}</span>
+                </div>
+                {viewCardBills > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>− Card bills</span>
+                    <span style={{ color: '#f5a623' }}>−{fmt(viewCardBills)}</span>
+                  </div>
+                )}
+                {viewUnpaidRecurring > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <span>− Unpaid recurring</span>
+                    <span style={{ color: '#f5a623' }}>−{fmt(viewUnpaidRecurring)}</span>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
 
